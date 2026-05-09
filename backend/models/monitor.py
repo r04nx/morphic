@@ -8,9 +8,9 @@ from services.notifications import NotificationManager
 class MonitorManager:
     """Manages system monitor operations"""
     
-    def __init__(self, db_manager, settings_manager=None):
+    def __init__(self, db_manager):
         self.db = db_manager
-        self.notification_manager = NotificationManager(settings_manager)
+        self.notification_manager = NotificationManager()
 
     SERIALIZABLE_FIELDS = ['last_check', 'created_at', 'last_anomaly_at']
     JSON_FIELDS = ['notifications', 'workflows']

@@ -88,55 +88,18 @@ class NtfyService(NotificationService):
 
 
 class EmailService(NotificationService):
-    """Email notification service"""
-    
-    def __init__(self, config, settings_manager=None):
-        super().__init__(config)
-        self.settings_manager = settings_manager
+    """Email notification service (mock implementation)"""
     
     def test_connection(self) -> bool:
-        """Test SMTP connection"""
-        if not self.settings_manager:
-            return False
-            
-        smtp_settings = self.settings_manager.get_setting('smtp', {})
-        
-        if not smtp_settings.get('enabled') or not smtp_settings.get('host'):
-            return False
-        
-        try:
-            import smtplib
-            
-            server = smtplib.SMTP(smtp_settings['host'], smtp_settings.get('port', 587), timeout=10)
-            server.ehlo()
-            
-            if smtp_settings.get('use_tls', True):
-                server.starttls()
-                server.ehlo()
-            
-            if smtp_settings.get('username') and smtp_settings.get('password'):
-                # Remove spaces from app password if present
-                password = smtp_settings['password'].replace(' ', '')
-                server.login(smtp_settings['username'], password)
-            
-            server.quit()
-            print(f"SMTP connection test successful to {smtp_settings['host']}")
-            return True
-            
-        except Exception as e:
-            print(f"SMTP connection test failed: {e}")
-            return False
+        """Test email service (mock)"""
+        print("Email service test - mock implementation")
+        return True
     
     def send_alert(self, monitor_id: str, status: str, message: str, **kwargs) -> bool:
         if not self.enabled or not self.destination:
             return False
         
         try:
-            # Get SMTP settings from global settings
-            smtp_settings = {}
-            if self.settings_manager:
-                smtp_settings = self.settings_manager.get_setting('smtp', {})
-            
             subject = f"Monitor Alert: {monitor_id} is {status}"
             body = f"""
 Monitor: {monitor_id}
@@ -144,44 +107,16 @@ Status: {status}
 Time: {datetime.now().isoformat()}
 Message: {message}
 
-View details: http://localhost:3000/monitors/{monitorId}
+View details: http://localhost:3000/monitors/{monitor_id}
             """
             
-            if smtp_settings.get('enabled') and smtp_settings.get('host'):
-                # Real SMTP implementation
-                import smtplib
-                from email.mime.text import MIMEText
-                from email.mime.multipart import MIMEMultipart
-                
-                msg = MIMEMultipart()
-                msg['From'] = smtp_settings.get('from_email', 'noreply@morphic.dev')
-                msg['To'] = self.destination
-                msg['Subject'] = subject
-                
-                msg.attach(MIMEText(body, 'plain'))
-                
-                server = smtplib.SMTP(smtp_settings['host'], smtp_settings.get('port', 587))
-                server.ehlo()
-                if smtp_settings.get('use_tls', True):
-                    server.starttls()
-                    server.ehlo()
-                if smtp_settings.get('username') and smtp_settings.get('password'):
-                    password = smtp_settings['password'].replace(' ', '')
-                    server.login(smtp_settings['username'], password)
-                
-                server.send_message(msg)
-                server.quit()
-                
-                print(f"Email sent to {self.destination} via SMTP")
-                return True
-            else:
-                # Mock implementation when SMTP not configured
-                print(f"EMAIL TO: {self.destination}")
-                print(f"SUBJECT: {subject}")
-                print(f"BODY: {body}")
-                print("(SMTP not configured - using mock implementation)")
-                return True
-                
+            # Mock email implementation
+            print(f"EMAIL TO: {self.destination}")
+            print(f"SUBJECT: {subject}")
+            print(f"BODY: {body}")
+            print("(Mock implementation - configure SMTP for real emails)")
+            
+            return True
         except Exception as e:
             print(f"Email notification failed: {e}")
             return False
@@ -347,8 +282,7 @@ class SlackService(NotificationService):
 class NotificationManager:
     """Manages all notification services"""
     
-    def __init__(self, settings_manager=None):
-        self.settings_manager = settings_manager
+    def __init__(self):
         self.services = {
             'NTFY': NtfyService,
             'EMAIL': EmailService, 
@@ -359,12 +293,7 @@ class NotificationManager:
     def create_service(self, notification_type: str, config: Dict[str, Any]) -> NotificationService:
         """Create notification service instance"""
         service_class = self.services.get(notification_type, NotificationService)
-        
-        # Pass settings_manager to EmailService
-        if notification_type == 'EMAIL':
-            return service_class(config, self.settings_manager)
-        else:
-            return service_class(config)
+        return service_class(config)
     
     def send_alerts(self, monitor_id: str, notifications: list, status: str, message: str, **kwargs) -> Dict[str, bool]:
         """Send alerts to all configured notification channels"""

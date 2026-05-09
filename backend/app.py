@@ -21,7 +21,6 @@ from config.settings import Config
 from models.database import DatabaseManager
 from models.incident import IncidentManager
 from models.monitor import MonitorManager
-from models.settings import SettingsManager
 
 # Import services
 from services.log_analysis import LogAIAnalyzer
@@ -34,7 +33,6 @@ from routes.monitors import register_monitor_routes
 from routes.analyze import register_analyze_routes
 from routes.agent import register_agent_routes
 from routes.notifications import register_notification_routes
-from routes.settings import register_settings_routes
 
 # Initialize Flask app
 app = Flask(__name__)
@@ -47,8 +45,7 @@ db_manager.connect_all()
 
 # Initialize managers
 incident_manager = IncidentManager(db_manager)
-settings_manager = SettingsManager(db_manager)
-monitor_manager = MonitorManager(db_manager, settings_manager)
+monitor_manager = MonitorManager(db_manager)
 log_analyzer = LogAIAnalyzer()
 
 # Initialize monitor checker (background monitoring)
@@ -93,7 +90,6 @@ register_incident_routes(app, incident_manager)
 register_monitor_routes(app, monitor_manager, tailer_registry, TAILER_ENABLED)
 register_analyze_routes(app, log_analyzer)
 register_notification_routes(app, monitor_manager)
-register_settings_routes(app, settings_manager)
 if agent_orchestrator:
     register_agent_routes(app, agent_orchestrator)
 

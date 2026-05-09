@@ -116,13 +116,6 @@ CREATE INDEX IF NOT EXISTS idx_incident_logs_timestamp ON incident_logs(timestam
 CREATE INDEX IF NOT EXISTS idx_remediation_actions_incident_id ON remediation_actions(incident_id);
 CREATE INDEX IF NOT EXISTS idx_monitors_created_at ON monitors(created_at);
 
--- Settings table for global configuration
-CREATE TABLE IF NOT EXISTS settings (
-    key VARCHAR(100) PRIMARY KEY,
-    value TEXT NOT NULL,
-    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-);
-
 -- Indexes for better performance
 CREATE INDEX IF NOT EXISTS idx_monitor_history_monitor_id ON monitor_history(monitor_id);
 CREATE INDEX IF NOT EXISTS idx_monitor_history_created_at ON monitor_history(created_at);
