@@ -98,13 +98,30 @@ def _process_incident(incident: dict[str, Any]) -> None:
             logger.error("GitHub PR agent error for trace_id=%s: %s", trace_id, exc)
 
     # -------------------------------------------------------
-    # Layer 3: Email notification (always, if email is planned)
+    # Layer 4: Email notification
+    # Always send for HIGH / CRITICAL.
+    # Send for MEDIUM / LOW only if remediation explicitly scheduled it.
     # -------------------------------------------------------
-    if "email" in remediation_result.get("planned_actions", ["email"]):
+    blast = (rca_result.get("blast_radius") or triage_result.get("blast_radius") or "").upper()
+    planned = remediation_result.get("planned_actions", [])
+    should_notify = blast in {"HIGH", "CRITICAL"} or "email" in planned
+
+    if should_notify:
         try:
-            notification.send_alert(rca_result, incident, pr_url=pr_url)
+            result = notification.send_alert(rca_result, incident, pr_url=pr_url)
+            if result.get("success"):
+                logger.info("Email alert sent for trace_id=%s blast=%s", trace_id, blast)
+            else:
+                logger.warning(
+                    "Email alert failed for trace_id=%s: %s", trace_id, result.get("error")
+                )
         except Exception as exc:
             logger.error("Notification failed for trace_id=%s: %s", trace_id, exc)
+    else:
+        logger.info(
+            "Email skipped for trace_id=%s — blast=%s below threshold and not in planned_actions",
+            trace_id, blast,
+        )
 
     logger.info("=== Pipeline complete for trace_id=%s ===", trace_id)
 
