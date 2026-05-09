@@ -66,35 +66,94 @@ class IncidentManager:
 
         return incident
 
-    def get_incident(self, trace_id):
-        """Get incident by trace_id"""
-        # Try cache first
-        if self.db.redis_client:
+    def get_incident(self, incident_id):
+        """
+        Fetch a single incident by UUID id OR trace_id.
+        Also attaches remediation_actions for the incident.
+        """
+        import uuid as _uuid
+
+        # Try Redis cache first (keyed by trace_id — skip for UUID lookups
+        # since the cache key is trace_id, not UUID)
+        is_uuid = False
+        try:
+            _uuid.UUID(str(incident_id))
+            is_uuid = True
+        except ValueError:
+            pass
+
+        if not is_uuid and self.db.redis_client:
             try:
-                cached = self.db.redis_client.get(f"incident:{trace_id}")
+                cached = self.db.redis_client.get(f"incident:{incident_id}")
                 if cached:
-                    return json.loads(cached)
+                    import json as _json
+                    return _json.loads(cached)
             except Exception as e:
                 print(f"Redis cache read failed (non-fatal): {e}")
 
-        # Query database
+        # Query DB — try by UUID id first, then by trace_id
+        if is_uuid:
+            sql = """
+                SELECT
+                    i.id, i.trace_id, i.timestamp, i.classification, i.root_cause,
+                    i.blast_radius, i.impact, i.confidence_score, i.status,
+                    i.created_at, i.updated_at, i.service, i.summary, i.rca_json
+                FROM incidents i
+                WHERE i.id = %s::uuid
+            """
+        else:
+            sql = """
+                SELECT
+                    i.id, i.trace_id, i.timestamp, i.classification, i.root_cause,
+                    i.blast_radius, i.impact, i.confidence_score, i.status,
+                    i.created_at, i.updated_at, i.service, i.summary, i.rca_json
+                FROM incidents i
+                WHERE i.trace_id = %s
+            """
+
         with self.db.get_cursor() as cursor:
-            cursor.execute("SELECT * FROM incidents WHERE trace_id = %s", (trace_id,))
+            cursor.execute(sql, (incident_id,))
             row = cursor.fetchone()
 
-        if row:
-            incident_dict = dict(row)
-            if self.db.redis_client:
-                try:
-                    self.db.redis_client.setex(
-                        f"incident:{trace_id}",
-                        3600,
-                        json.dumps(incident_dict, default=str)
-                    )
-                except Exception as e:
-                    print(f"Redis cache write failed (non-fatal): {e}")
-            return incident_dict
-        return None
+        if not row:
+            return None
+
+        incident_dict = dict(row)
+
+        # Attach remediation actions
+        incident_dict["actions"] = self._get_actions(incident_dict["id"])
+
+        # Cache by trace_id for future lookups
+        if self.db.redis_client:
+            try:
+                self.db.redis_client.setex(
+                    f"incident:{incident_dict['trace_id']}",
+                    3600,
+                    json.dumps(incident_dict, default=str)
+                )
+            except Exception as e:
+                print(f"Redis cache write failed (non-fatal): {e}")
+
+        return incident_dict
+
+    def _get_actions(self, incident_id):
+        """Fetch remediation actions for an incident."""
+        try:
+            with self.db.get_cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT id, action_type, status, details, started_at, completed_at, created_at
+                    FROM remediation_actions
+                    WHERE incident_id = %s::uuid
+                    ORDER BY created_at DESC
+                    """,
+                    (str(incident_id),)
+                )
+                rows = cursor.fetchall()
+            return [dict(r) for r in rows]
+        except Exception as e:
+            print(f"Failed to fetch actions (non-fatal): {e}")
+            return []
 
     def list_incidents(self, limit=50, offset=0, blast_radius_filter=None):
         """

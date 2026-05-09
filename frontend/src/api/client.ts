@@ -20,8 +20,10 @@ import {
   mockIntegrations,
 } from "./mock";
 
-const BASE_URL =
-  (typeof import.meta !== "undefined" && (import.meta as any).env?.VITE_API_BASE_URL) || "";
+// Always use relative URLs so requests go through the Vite dev proxy (/api → localhost:5000).
+// Do NOT set VITE_API_BASE_URL — that causes absolute URLs which bypass the proxy and
+// can fail silently (CORS, wrong IP, etc.).
+const BASE_URL = "";
 
 const TIMEOUT_MS = 15_000;
 
@@ -40,7 +42,8 @@ async function tryFetch<T>(path: string, init?: RequestInit): Promise<T | null> 
     if (!text) return true as any;
     return JSON.parse(text) as T;
   } catch (err) {
-    console.warn(`[morphic.api] ${path} unavailable, falling back to mock:`, err);
+    // Use console.error so failures appear as red errors in DevTools, not hidden warnings.
+    console.error(`[morphic.api] ${path} failed — falling back to mock:`, err);
     return null;
   } finally {
     clearTimeout(t);
@@ -57,8 +60,17 @@ export const api = {
   },
 
   async listIncidents(limit = 50): Promise<Incident[]> {
-    const real = await tryFetch<{ incidents: Incident[]; limit: number; offset: number; total: number }>(`/api/incidents?limit=${limit}`);
-    if (real && real.incidents) return real.incidents;
+    const real = await tryFetch<{ incidents: Incident[] } | Incident[]>(
+      `/api/incidents?limit=${limit}`,
+    );
+    if (real) {
+      // Handle both { incidents: [...] } envelope and plain [...] array
+      const list = Array.isArray(real)
+        ? real
+        : (real as { incidents: Incident[] }).incidents;
+      if (list && list.length >= 0) return list;
+    }
+    console.error("[morphic.api] listIncidents fell back to mock — backend unavailable or returned unexpected shape");
     await sleep(120);
     return mockIncidents.slice(0, limit);
   },

@@ -112,16 +112,43 @@ def register_incident_routes(app, incident_manager):
                 return jsonify({"error": str(e)}), 500
 
 
-    @app.route('/api/incidents/<trace_id>')
-    def get_incident(trace_id):
-        """Get specific incident"""
+    @app.route('/api/incidents/<incident_id>')
+    def get_incident(incident_id):
+        """
+        Get a single incident by UUID id or trace_id.
+        Returns: { incident, rca?, actions }
+        """
         try:
-            incident = incident_manager.get_incident(trace_id)
-            if incident:
-                return jsonify(_normalize_incident(incident))
-            return jsonify({"error": "Incident not found"}), 404
+            raw = incident_manager.get_incident(incident_id)
+            if not raw:
+                return jsonify({"error": "Incident not found"}), 404
+
+            inc = _normalize_incident(raw)
+
+            # Extract rca_json → rca (frontend expects it as a sibling key)
+            rca = inc.pop("rca_json", None)
+
+            # Extract actions → actions (also a sibling key)
+            actions = inc.pop("actions", [])
+
+            # Serialize datetime objects inside actions
+            clean_actions = []
+            for a in (actions or []):
+                ca = dict(a)
+                for field in ("started_at", "completed_at", "created_at"):
+                    val = ca.get(field)
+                    if isinstance(val, datetime):
+                        ca[field] = val.isoformat()
+                clean_actions.append(ca)
+
+            return jsonify({
+                "incident": inc,
+                "rca":      rca,       # None if no RCA yet → frontend shows "RCA not ready"
+                "actions":  clean_actions,
+            })
         except Exception as e:
             return jsonify({"error": str(e)}), 500
+
 
     @app.route('/api/logs', methods=['GET', 'POST'])
     def logs():
