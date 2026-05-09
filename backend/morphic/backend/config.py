@@ -32,6 +32,10 @@ class Config:
     EMAIL_PASSWORD = os.getenv("EMAIL_PASSWORD", "")
     EMAIL_TO = os.getenv("EMAIL_TO", "")
 
+    # Telegram
+    TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
+    TELEGRAM_CHAT_ID   = os.getenv("TELEGRAM_CHAT_ID", "")
+
     # PostgreSQL
     DATABASE_URL = os.getenv(
         "DATABASE_URL",

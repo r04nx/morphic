@@ -5,6 +5,7 @@ Sends human-readable incident summary emails via SMTP.
 
 import logging
 import smtplib
+import requests
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from typing import Any
@@ -121,6 +122,70 @@ def _build_html(
 </html>"""
 
 
+def _send_telegram(
+    rca: dict[str, Any],
+    pr_url: str | None,
+) -> dict[str, Any]:
+    """
+    Send a Telegram message for an incident.
+    Returns {"success": bool, "error": str | None}
+    Fails gracefully — never raises.
+    """
+    token   = Config.TELEGRAM_BOT_TOKEN
+    chat_id = Config.TELEGRAM_CHAT_ID
+
+    if not token:
+        logger.warning("TELEGRAM_BOT_TOKEN not set — skipping Telegram notification")
+        return {"success": False, "error": "TELEGRAM_BOT_TOKEN not configured"}
+    if not chat_id:
+        logger.warning("TELEGRAM_CHAT_ID not set — skipping Telegram notification")
+        return {"success": False, "error": "TELEGRAM_CHAT_ID not configured"}
+
+    blast_radius   = rca.get("blast_radius", "MEDIUM")
+    classification = rca.get("classification", "Unknown Incident")
+    root_cause     = rca.get("root_cause", "Not determined")
+    impact         = rca.get("impact", "\u2014")
+    confidence     = rca.get("confidence_score", 0.0)
+    trace_id       = rca.get("trace_id", "unknown")
+    signals        = rca.get("log_signals", {})
+    service        = signals.get("service") or rca.get("service", "unknown")
+    confidence_pct = int(float(confidence) * 100)
+
+    lines = [
+        f"\U0001f6a8 *[{blast_radius}] {classification}*",
+        "",
+        f"*Root Cause:* {root_cause}",
+        f"*Impact:* {impact}",
+        f"*Confidence:* {confidence_pct}%",
+        f"*Trace ID:* `{trace_id}`",
+        f"*Service:* {service}",
+    ]
+    if pr_url:
+        lines.append(f"*PR:* {pr_url}")
+
+    text = "\n".join(lines)
+
+    try:
+        resp = requests.post(
+            f"https://api.telegram.org/bot{token}/sendMessage",
+            json={
+                "chat_id":    chat_id,
+                "text":       text,
+                "parse_mode": "Markdown",
+            },
+            timeout=10,
+        )
+        if resp.status_code == 200 and resp.json().get("ok"):
+            logger.info("Telegram alert sent for trace_id=%s", trace_id)
+            return {"success": True, "error": None}
+        err = resp.text
+        logger.warning("Telegram API error: %s", err)
+        return {"success": False, "error": err}
+    except Exception as exc:
+        logger.warning("Telegram notification failed: %s", exc)
+        return {"success": False, "error": str(exc)}
+
+
 def send_alert(
     rca: dict[str, Any],
     incident: dict[str, Any],
@@ -188,14 +253,14 @@ def send_alert(
                 "completed",
                 {"to": Config.EMAIL_TO, "subject": subject},
             )
-        return {"success": True, "error": None}
+        email_result = {"success": True, "error": None}
 
     except smtplib.SMTPAuthenticationError:
         err = "SMTP authentication failed — check EMAIL_FROM / EMAIL_PASSWORD"
         logger.error(err)
         if action_row:
             postgres.complete_action(str(action_row["id"]), "failed", {"error": err})
-        return {"success": False, "error": err}
+        email_result = {"success": False, "error": err}
     except Exception as exc:
         err = str(exc)
         logger.error("Failed to send alert email: %s", err)
@@ -204,4 +269,14 @@ def send_alert(
                 postgres.complete_action(str(action_row["id"]), "failed", {"error": err})
             except Exception:
                 pass
-        return {"success": False, "error": err}
+        email_result = {"success": False, "error": err}
+
+    # ── Telegram (independent — never blocks email result) ──────────────
+    telegram_result = _send_telegram(rca, pr_url)
+
+    return {
+        "success":  email_result["success"] or telegram_result["success"],
+        "email":    email_result,
+        "telegram": telegram_result,
+        "error":    email_result["error"] if not email_result["success"] else None,
+    }
