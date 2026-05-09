@@ -1,0 +1,53 @@
+# Core LogAI library
+logai==0.1.5
+
+# Database connectivity
+psycopg2-binary==2.9.9
+neo4j==5.26.0
+redis==5.2.0
+
+# Web framework
+Flask==3.1.0
+Flask-CORS==4.1.0
+
+# Data processing
+pandas==2.2.3
+numpy==1.26.4
+
+# Machine Learning & Analytics
+scikit-learn==1.5.2
+scipy==1.14.1
+
+# HTTP requests
+requests==2.32.3
+
+# Environment variables
+python-dotenv==1.0.1
+
+# Async support
+asyncio
+aiohttp==3.11.10
+
+# GitHub API
+PyGithub==2.4.0
+
+# Email
+smtplib
+email-validator==2.2.0
+
+# Logging
+loguru==0.7.2
+
+# JSON handling
+orjson==3.10.12
+
+# Date/time
+python-dateutil==2.9.0.post0
+
+# Testing
+pytest==8.3.3
+pytest-asyncio==0.24.0
+
+# Development
+black==24.10.0
+flake8==7.1.1
