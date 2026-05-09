@@ -22,6 +22,10 @@ from datetime import datetime, timezone
 from typing import Optional, Dict, Any, List
 from pathlib import Path
 
+from config.settings import Config
+from services.openrouter_client import OpenRouterClient
+from services.ollama_client import OllamaClient
+
 logger = logging.getLogger("morphic.agent_orchestrator")
 
 # ─────────────────────────────────────────────────────────────
@@ -61,6 +65,7 @@ class AgentOrchestrator:
         # Create a default MCP config for GitHub tool availability
         self.mcp_config_path = self.TMP_BASE / "claude-mcp.json"
         self._ensure_mcp_config()
+        self.ollama = OllamaClient()
 
     def _ensure_mcp_config(self):
         """Ensure MCP configuration file exists so Claude Code can load the GitHub server."""
@@ -212,8 +217,27 @@ class AgentOrchestrator:
             cwd = str(repo_dir) if repo_dir else str(work_dir)
             self._update_run(run_id, status="ANALYZING")
 
-            # Execute full Claude Code CLI pipeline
-            claude_output = self._invoke_claude_full(cwd, str(context_file), github_token)
+            if Config.LLM_PROVIDER == "openrouter":
+                claude_output, pr_url, pr_num = self._invoke_openrouter_agent(
+                    cwd=cwd,
+                    context_text=context_text,
+                    github_repo=github_repo,
+                    github_token=github_token,
+                    github_branch=github_branch,
+                    trace_id=trace_id,
+                )
+            elif Config.LLM_PROVIDER == "ollama":
+                claude_output, pr_url, pr_num = self._invoke_ollama_agent(
+                    cwd=cwd,
+                    context_text=context_text,
+                    github_repo=github_repo,
+                    github_token=github_token,
+                    github_branch=github_branch,
+                    trace_id=trace_id,
+                )
+            else:
+                claude_output = self._invoke_claude_full(cwd, str(context_file), github_token)
+                pr_url, pr_num = self._extract_pr_info(claude_output)
 
             # Read RCA output
             rca_md = ""
@@ -221,8 +245,8 @@ class AgentOrchestrator:
             if rca_path.exists():
                 rca_md = rca_path.read_text(encoding="utf-8")
 
-            # Extract PR details
-            pr_url, pr_num = self._extract_pr_info(claude_output)
+            if Config.LLM_PROVIDER != "openrouter":
+                pr_url, pr_num = self._extract_pr_info(claude_output)
             summary = self._build_summary(analysis, claude_output)
 
             status = "PR_CREATED" if pr_url else ("COMPLETED" if rca_md else "ANALYZED")
@@ -250,6 +274,220 @@ class AgentOrchestrator:
         except Exception as exc:
             logger.error(f"[orchestrator] Agent {run_id} failed: {exc}", exc_info=True)
             self._update_run(run_id, status="FAILED", error_message=str(exc)[:2000])
+
+    def _invoke_openrouter_agent(
+        self,
+        cwd: str,
+        context_text: str,
+        github_repo: Optional[str],
+        github_token: Optional[str],
+        github_branch: str,
+        trace_id: str,
+    ):
+        client = OpenRouterClient()
+
+        prompt = (
+            "You are an autonomous SRE agent."
+            "\nReturn ONLY valid JSON with keys: rca_md (string), patch (string, unified diff; may be empty), "
+            "pr_title (string), pr_body (string), commit_message (string), branch_name (string)."
+            "\nIf you cannot produce a safe patch, set patch to an empty string but still produce rca_md."
+            "\n\nIncident context follows:\n\n" + context_text
+        )
+
+        resp = client.chat_completions(
+            messages=[
+                {"role": "system", "content": SRE_SYSTEM_PROMPT},
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0.2,
+            max_tokens=2200,
+        )
+
+        text = client.extract_text(resp)
+        data = json.loads(text)
+
+        rca_md = str(data.get("rca_md", ""))
+        patch = str(data.get("patch", "") or "")
+        pr_title = str(data.get("pr_title", f"fix: remediation for {trace_id}"))
+        pr_body = str(data.get("pr_body", ""))
+        commit_message = str(data.get("commit_message", pr_title))
+        branch_name = str(data.get("branch_name", f"morphic/{trace_id}"))
+
+        if rca_md:
+            Path(cwd, "RCA.md").write_text(rca_md, encoding="utf-8")
+
+        if patch.strip():
+            apply_res = subprocess.run(
+                ["git", "apply", "--whitespace=nowarn", "-"],
+                input=patch,
+                text=True,
+                cwd=cwd,
+                capture_output=True,
+            )
+            if apply_res.returncode != 0:
+                raise RuntimeError(f"git apply failed: {apply_res.stderr[:2000]}")
+
+        if not github_repo or not github_token:
+            return text, None, None
+
+        self._git_commit_push(
+            cwd=cwd,
+            branch_name=branch_name,
+            commit_message=commit_message,
+            base_branch=github_branch,
+        )
+
+        pr_url, pr_num = self._open_pr(
+            github_repo=github_repo,
+            github_token=github_token,
+            head_branch=branch_name,
+            base_branch=github_branch,
+            title=pr_title,
+            body=pr_body or rca_md[:5000],
+        )
+
+        return text, pr_url, pr_num
+
+    def _invoke_ollama_agent(
+        self,
+        cwd: str,
+        context_text: str,
+        github_repo: Optional[str],
+        github_token: Optional[str],
+        github_branch: str,
+        trace_id: str,
+    ):
+        """Run Ollama Cloud agent via CLI (ollama launch claude) with GitHub MCP to generate RCA/patch, then apply and create PR via PyGithub"""
+        from github import Github, GithubException
+        import re
+        prompt = (
+            "You are an autonomous SRE agent."
+            "\nReturn ONLY valid JSON with keys: rca_md (string), patch (string, unified diff; may be empty), "
+            "pr_title (string), pr_body (string), commit_message (string), branch_name (string)."
+            "\nIf you cannot produce a safe patch, set patch to an empty string but still produce rca_md."
+            "\n\nIncident context follows:\n\n" + context_text
+        )
+        # Prepare CLI command
+        cmd = [
+            "ollama", "launch", "claude",
+            "--model", "gemma4:31b-cloud",
+            "-y",
+            "--",
+            "--mcp-config", str(self.mcp_config_path),
+            "--permission-mode", "bypassPermissions",
+            "--print", prompt,
+        ]
+        env = os.environ.copy()
+        if github_token:
+            env["GITHUB_PERSONAL_ACCESS_TOKEN"] = github_token
+            env["GITHUB_TOKEN"] = github_token
+        try:
+            result = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=300, env=env)
+            if result.returncode != 0:
+                logger.error(f"[AgentOrchestrator] Ollama CLI failed: {result.stderr}")
+                return f"Ollama CLI failed: {result.stderr}", None, None
+            content = result.stdout
+        except subprocess.TimeoutExpired as e:
+            logger.error(f"[AgentOrchestrator] Ollama CLI timed out: {e}")
+            return f"Ollama CLI timed out: {e}", None, None
+        except Exception as e:
+            logger.error(f'[AgentOrchestrator] Ollama CLI error: {e}')
+            return f"Ollama CLI error: {e}", None, None
+
+        # Parse JSON output
+        try:
+            json_match = re.search(r'\{[\s\S]*\}', content)
+            if not json_match:
+                raise ValueError('No JSON block found in Ollama CLI response')
+            result = json.loads(json_match.group(0))
+        except Exception as e:
+            logger.error(f'[AgentOrchestrator] Failed to parse Ollama CLI JSON response: {e}')
+            return f"Failed to parse Ollama CLI JSON response: {e}", None, None
+
+        rca_md = str(result.get("rca_md", ""))
+        patch = str(result.get("patch", "") or "")
+        pr_title = str(result.get("pr_title", f"fix: remediation for {trace_id}"))
+        pr_body = str(result.get("pr_body", ""))
+        commit_message = str(result.get("commit_message", pr_title))
+        branch_name = str(result.get("branch_name", f"morphic/{trace_id}"))
+
+        if rca_md:
+            Path(cwd, "RCA.md").write_text(rca_md, encoding="utf-8")
+
+        pr_url = None
+        pr_num = None
+        if patch and github_repo and github_token:
+            patch_path = Path(cwd) / "fix.patch"
+            patch_path.write_text(patch, encoding="utf-8")
+            try:
+                subprocess.run(["git", "apply", str(patch_path)], check=True, cwd=cwd, capture_output=True, text=True)
+                subprocess.run(["git", "checkout", "-b", branch_name], check=True, cwd=cwd, capture_output=True, text=True)
+                subprocess.run(["git", "add", "."], check=True, cwd=cwd, capture_output=True, text=True)
+                subprocess.run(["git", "commit", "-m", commit_message], check=True, cwd=cwd, capture_output=True, text=True)
+                subprocess.run(["git", "push", "-u", "origin", branch_name], check=True, cwd=cwd, capture_output=True, text=True)
+                owner_repo = github_repo
+                if owner_repo.endswith(".git"):
+                    owner_repo = owner_repo[:-4]
+                if "github.com/" in owner_repo:
+                    owner_repo = owner_repo.split("github.com/", 1)[1]
+                owner_repo = owner_repo.strip("/")
+                gh = Github(github_token)
+                repo = gh.get_repo(owner_repo)
+                pr = repo.create_pull(title=pr_title, body=pr_body, head=branch_name, base=github_branch)
+                pr_url = pr.html_url
+                pr_num = pr.number
+            except (subprocess.CalledProcessError, GithubException) as e:
+                logger.error(f"[AgentOrchestrator] Ollama PR flow failed: {e}")
+        claude_output = f"Ollama CLI agent completed. RCA generated. PR: {pr_url or 'None'}"
+        return claude_output, pr_url, pr_num
+
+    def _git_commit_push(self, cwd: str, branch_name: str, commit_message: str, base_branch: str):
+        res = subprocess.run(["git", "rev-parse", "--is-inside-work-tree"], cwd=cwd, capture_output=True, text=True)
+        if res.returncode != 0:
+            raise RuntimeError("Not a git repository")
+
+        subprocess.run(["git", "checkout", base_branch], cwd=cwd, capture_output=True, text=True)
+        subprocess.run(["git", "pull", "--ff-only"], cwd=cwd, capture_output=True, text=True)
+
+        subprocess.run(["git", "checkout", "-B", branch_name], cwd=cwd, capture_output=True, text=True)
+        subprocess.run(["git", "add", "-A"], cwd=cwd, capture_output=True, text=True)
+
+        diff = subprocess.run(["git", "diff", "--cached", "--name-only"], cwd=cwd, capture_output=True, text=True)
+        if diff.returncode != 0:
+            raise RuntimeError(diff.stderr[:2000])
+        if not diff.stdout.strip():
+            return
+
+        commit = subprocess.run(["git", "commit", "-m", commit_message], cwd=cwd, capture_output=True, text=True)
+        if commit.returncode != 0:
+            raise RuntimeError(commit.stderr[:2000])
+
+        push = subprocess.run(["git", "push", "-u", "origin", branch_name], cwd=cwd, capture_output=True, text=True)
+        if push.returncode != 0:
+            raise RuntimeError(push.stderr[:2000])
+
+    def _open_pr(
+        self,
+        github_repo: str,
+        github_token: str,
+        head_branch: str,
+        base_branch: str,
+        title: str,
+        body: str,
+    ):
+        from github import Github
+
+        owner_repo = github_repo
+        if owner_repo.endswith(".git"):
+            owner_repo = owner_repo[:-4]
+        if "github.com/" in owner_repo:
+            owner_repo = owner_repo.split("github.com/", 1)[1]
+        owner_repo = owner_repo.strip("/")
+
+        gh = Github(github_token)
+        repo = gh.get_repo(owner_repo)
+        pr = repo.create_pull(title=title, body=body, head=head_branch, base=base_branch)
+        return pr.html_url, pr.number
 
     # ------------------------------------------------------------------ #
     #  CLI Invocation

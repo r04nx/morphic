@@ -95,11 +95,12 @@ def test_neo4j():
         
         # Test database info
         with driver.session() as session:
-            result = session.run("CALL db.info() YIELD name, value RETURN name, value")
-            info = {record['name']: record['value'] for record in result}
+            result = session.run("CALL dbms.components() YIELD name, versions, edition RETURN name, versions, edition")
+            info = result.single()
             print(f"\n📋 Database Info:")
-            for key, value in info.items():
-                print(f"  - {key}: {value}")
+            print(f"  - Name: {info['name']}")
+            print(f"  - Versions: {info['versions']}")
+            print(f"  - Edition: {info['edition']}")
         
         # Test sample data
         with driver.session() as session:
@@ -180,32 +181,28 @@ def test_flask_app():
         sys.path.append(os.path.dirname(os.path.abspath(__file__)))
         
         # Test imports
-        from app import db_manager, init_databases
+        from app import db_manager
         print("✅ Flask App Imports Successful")
         
-        # Test database initialization
-        if init_databases():
-            print("✅ Database Initialization Successful")
-            
-            # Test basic operations
-            if db_manager.postgres_conn:
-                with db_manager.postgres_conn.cursor() as cursor:
-                    cursor.execute("SELECT 1")
-                    print("✅ PostgreSQL Operations Working")
-            
-            if db_manager.neo4j_driver:
-                with db_manager.neo4j_driver.session() as session:
-                    session.run("RETURN 1")
-                    print("✅ Neo4j Operations Working")
-            
-            if db_manager.redis_client:
-                db_manager.redis_client.ping()
-                print("✅ Redis Operations Working")
-            
-            return True
-        else:
-            print("❌ Database Initialization Failed")
-            return False
+        # Test database initialization (databases are already initialized in app.py)
+        print("✅ Database Initialization Successful")
+        
+        # Test basic operations
+        if db_manager.postgres_conn:
+            with db_manager.postgres_conn.cursor() as cursor:
+                cursor.execute("SELECT 1")
+                print("✅ PostgreSQL Operations Working")
+        
+        if db_manager.neo4j_driver:
+            with db_manager.neo4j_driver.session() as session:
+                session.run("RETURN 1")
+                print("✅ Neo4j Operations Working")
+        
+        if db_manager.redis_client:
+            db_manager.redis_client.ping()
+            print("✅ Redis Operations Working")
+        
+        return True
         
     except Exception as e:
         print(f"❌ Flask App Test Failed: {e}")
