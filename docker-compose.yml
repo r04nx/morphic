@@ -1,0 +1,64 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: morphic-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: morphic
+      POSTGRES_USER: morphic_user
+      POSTGRES_PASSWORD: morphic_password_2024
+      POSTGRES_HOST_AUTH_METHOD: trust
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./backend/init-db.sql:/docker-entrypoint-initdb.d/init-db.sql
+    networks:
+      - morphic-network
+
+  neo4j:
+    image: neo4j:5.15-community
+    container_name: morphic-neo4j
+    restart: unless-stopped
+    environment:
+      NEO4J_AUTH: neo4j/morphic_neo4j_password_2024
+      NEO4J_dbms_default__database: morphic
+      NEO4J_dbms_memory_heap_initial__size: 512m
+      NEO4J_dbms_memory_heap_max__size: 2G
+      NEO4J_dbms_memory_pagecache_size: 1G
+    ports:
+      - "7474:7474"  # HTTP
+      - "7687:7687"  # Bolt
+    volumes:
+      - neo4j_data:/data
+      - neo4j_logs:/logs
+      - neo4j_import:/var/lib/neo4j/import
+      - neo4j_plugins:/plugins
+    networks:
+      - morphic-network
+
+  redis:
+    image: redis:7-alpine
+    container_name: morphic-redis
+    restart: unless-stopped
+    command: redis-server --requirepass morphic_redis_password_2024
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - morphic-network
+
+volumes:
+  postgres_data:
+  neo4j_data:
+  neo4j_logs:
+  neo4j_import:
+  neo4j_plugins:
+  redis_data:
+
+networks:
+  morphic-network:
+    driver: bridge
