@@ -2,11 +2,14 @@
 RCA Agent — Layer 2 (Intelligence Layer)
 Calls Anthropic Claude to produce a strict JSON RCA document.
 
-Enhancement: Before calling Claude, fetches the actual Java source files
-from https://github.com/Sparky17561/HackathonPS so Claude can reference
-specific line numbers in its fix suggestion.
+Before calling Claude:
+  1. Fetches the log slice for this trace_id from PostgreSQL.
+  2. Extracts the Java class name from the log entries.
+  3. Downloads the actual Java source from GitHub (Sparky17561/HackathonPS).
+  4. Injects both into the Claude prompt so Claude can reference exact line numbers.
+  5. Falls back gracefully to log-only RCA if source fetch fails.
 
-After RCA, updates PostgreSQL and Neo4j with the result.
+After RCA, persists the result to PostgreSQL and Neo4j.
 """
 
 import json
@@ -18,7 +21,7 @@ import anthropic
 
 from config import Config
 from db import postgres, neo4j_client
-from utils.github_source import fetch_sources_for_incident
+from agents.github_source import fetch_java_source, extract_class_name_from_logs
 
 logger = logging.getLogger(__name__)
 
@@ -39,42 +42,36 @@ def _get_client() -> anthropic.Anthropic:
 _SYSTEM_PROMPT = """You are a senior Site Reliability Engineer (SRE) specializing in distributed systems,
 Java Spring Boot microservices, and production incident management.
 
-Your job is to analyze structured log data AND the actual Java source code to produce a precise Root Cause Analysis (RCA).
+Your job is to analyze structured log data and Java source code to produce a precise Root Cause Analysis (RCA).
 
 CRITICAL RULES:
 1. You MUST return ONLY a valid JSON object — no prose, no markdown, no code fences.
 2. The JSON must strictly match the schema provided.
-3. The suggested_fix.target_class MUST be the exact Java class name from the source code provided.
-4. suggested_fix.patch MUST be real, compilable Java code based on the ACTUAL source provided.
-5. suggested_fix.patch MUST reference specific line numbers from the source (e.g. "// Fix at line 42").
-6. suggested_fix.rationale MUST explain which lines are problematic and why.
-7. blast_radius must be exactly one of: LOW, MEDIUM, HIGH, CRITICAL
-8. confidence_score must be a float between 0.0 and 1.0
-   - Use 0.9+ when you can see the exact buggy line in the source
-   - Use 0.7-0.89 when the bug is strongly implied by the source
-   - Use 0.5-0.69 when source partially confirms the log signals
-   - Use below 0.5 when source is not available or doesn't match
-9. github_pr.labels must be a JSON array of strings.
+3. When source code is given, suggested_fix.target_class MUST be the exact Java class name from that source.
+4. When source code is given, suggested_fix.patch MUST reference specific line numbers with comments like:
+      // Line 91-103: shouldFail() triggers RuntimeException without idempotency check
+5. suggested_fix.patch must be real, compilable Java — not pseudocode.
+6. blast_radius must be exactly one of: LOW, MEDIUM, HIGH, CRITICAL
+7. confidence_score rules:
+   - 0.90–1.0  → exact buggy line visible in source
+   - 0.70–0.89 → bug strongly implied by source structure
+   - 0.50–0.69 → source partially confirms logs
+   - below 0.5 → no source available, log-only analysis
+8. github_pr.labels must be a JSON array of strings.
 
-The five incident scenarios you must recognize and prioritize:
-- Gateway Timeout → Duplicate Payment (idempotency failure — look for missing idempotency key checks)
-- Partial Write → Orphaned Payment Record (transaction rollback missing — look for @Transactional gaps)
-- Race Condition → Negative Stock (missing synchronization — look for unsynchronized inventory updates)
-- Async Trace Loss → MDC Propagation Failure (ThreadLocal not propagated — look for async executor config)
-- Inconsistent Order State → Stuck CREATED (missing state machine guard — look for order status transitions)
-
-When source code is provided:
-- Read it carefully and find the EXACT lines responsible for the bug
-- Quote the problematic code in your rationale
-- Write the patch as a targeted fix to those exact lines
-- Include the line numbers in comments within the patch
+The five incident scenarios you must recognize:
+- Gateway Timeout → Duplicate Payment      (no idempotency key — look for retry without dedup)
+- Partial Write   → Orphaned Payment       (missing @Transactional — payment saved, order not updated)
+- Race Condition  → Negative Stock         (unsynchronized inventory decrement)
+- Async Trace Loss→ MDC Propagation Failure(ThreadLocal lost across async boundaries)
+- Inconsistent Order State → Stuck CREATED (missing state machine transition guard)
 """
 
 _RCA_SCHEMA = """{
   "classification": "string",
-  "root_cause": "string (one sentence, referencing the specific Java class and line)",
+  "root_cause": "string (one sentence, naming the class and line if source was available)",
   "blast_radius": "LOW|MEDIUM|HIGH|CRITICAL",
-  "impact": "string (plain English, non-technical)",
+  "impact": "string (plain English, non-technical description)",
   "trace_id": "string",
   "timestamp": "string",
   "log_signals": {
@@ -85,9 +82,9 @@ _RCA_SCHEMA = """{
   },
   "suggested_fix": {
     "language": "java",
-    "target_class": "string (exact class name from source)",
-    "patch": "string (compilable Java code with line number comments)",
-    "rationale": "string (explain which lines are buggy and why)",
+    "target_class": "string",
+    "patch": "string (compilable Java with // Line N: comments)",
+    "rationale": "string (quote the problematic lines and explain why they are wrong)",
     "tests": ["string"]
   },
   "github_pr": {
@@ -100,64 +97,64 @@ _RCA_SCHEMA = """{
 
 
 # ---------------------------------------------------------------------------
-# Prompt builder
+# Prompt builders
 # ---------------------------------------------------------------------------
-
-def _format_source_block(src: dict) -> str:
-    """Format a single fetched source file for the prompt."""
-    return (
-        f"=== SOURCE: {src['class_name']} ===\n"
-        f"File: {src['file_path']}\n"
-        f"GitHub: {src['github_url']}\n"
-        f"Lines: {src['line_count']}\n"
-        f"\n"
-        f"{src['numbered_src']}\n"
-    )
-
 
 def _build_user_prompt(
     incident: dict[str, Any],
     log_slice: list[dict[str, Any]],
-    source_files: list[dict],
+    class_name: str | None,
+    source: dict | None,
 ) -> str:
-    """Compose a precise prompt containing logs + actual Java source."""
-    log_text = json.dumps(log_slice, indent=2, default=str)[:6000]  # cap log tokens
+    """
+    Build the Claude user prompt.
+    Follows the exact structure the user specified:
 
-    # Build source section (cap each file at 300 lines to stay within context)
-    source_section = ""
-    if source_files:
-        source_parts = []
-        for src in source_files:
-            lines = src["numbered_src"].splitlines()
-            if len(lines) > 300:
-                # Include first 50 + last 50 + middle section most likely to contain bug
-                trimmed = (
-                    lines[:50]
-                    + [f"  ... ({len(lines) - 100} lines omitted) ..."]
-                    + lines[-50:]
-                )
-                src_text = "\n".join(trimmed)
-            else:
-                src_text = src["numbered_src"]
+        Here are the relevant logs:
+        {log_slice}
 
-            source_parts.append(
-                f"=== SOURCE: {src['class_name']} ===\n"
-                f"File: {src['file_path']}\n"
-                f"GitHub: {src['github_url']}\n"
-                f"Total lines: {src['line_count']}\n\n"
-                f"{src_text}\n"
+        Here is the actual Java source code for {class_name}:
+        {source_code}
+
+        Analyze both the logs AND the source code ...
+    """
+    log_text = json.dumps(log_slice, indent=2, default=str)[:6000]
+
+    # --- Source section ---
+    if source:
+        # Cap at 300 lines to stay within context window while keeping all key sections
+        lines = source["numbered_src"].splitlines()
+        if len(lines) > 300:
+            trimmed = (
+                lines[:80]
+                + [f"", f"    ... ({len(lines) - 160} lines omitted for brevity) ...", ""]
+                + lines[-80:]
             )
+            src_text = "\n".join(trimmed)
+        else:
+            src_text = source["numbered_src"]
+
         source_section = (
-            "\n=== JAVA SOURCE CODE (actual repo — reference line numbers in your fix) ===\n"
-            + "\n".join(source_parts)
+            f"Here is the actual Java source code for {source['class_name']}:\n"
+            f"(File: {source['file_path']} | {source['github_url']})\n\n"
+            f"{src_text}"
+        )
+        analysis_instruction = (
+            "Analyze both the logs AND the source code to provide surgical RCA with exact line numbers.\n"
+            "Quote the specific lines that are buggy in your rationale.\n"
+            "Your patch must fix those exact lines — include '// Line N:' comments to identify them."
         )
     else:
-        source_section = "\n=== JAVA SOURCE CODE ===\n(Not available — use log signals only)\n"
+        source_section = (
+            f"Java source code for {class_name or 'the affected class'} "
+            f"could not be retrieved — perform log-only analysis."
+        )
+        analysis_instruction = (
+            "Analyze the logs to determine the root cause.\n"
+            "Set confidence_score below 0.5 since no source code is available."
+        )
 
-    return f"""Analyze the following incident using the log data AND the actual Java source code.
-Reference specific line numbers in your fix.
-
-=== INCIDENT METADATA ===
+    return f"""=== INCIDENT METADATA ===
 trace_id:       {incident.get("trace_id")}
 timestamp:      {incident.get("timestamp")}
 service:        {incident.get("service")}
@@ -165,16 +162,15 @@ classification: {incident.get("triage_classification", "unknown")}
 blast_radius:   {incident.get("triage_blast_radius", "unknown")}
 async_orphan:   {incident.get("async_orphan", False)}
 
-=== LOG SLICE (this trace_id only) ===
+Here are the relevant logs:
 {log_text}
+
 {source_section}
+
+{analysis_instruction}
+
 === REQUIRED JSON SCHEMA ===
 {_RCA_SCHEMA}
-
-IMPORTANT:
-- Your suggested_fix.patch must be based on the ACTUAL source code shown above.
-- Reference line numbers like: "// Line 87: missing @Transactional — add it here"
-- Set confidence_score >= 0.85 if you can see the exact buggy line.
 
 Return ONLY the JSON object. No other text."""
 
@@ -185,15 +181,18 @@ Return ONLY the JSON object. No other text."""
 
 def _extract_json(text: str) -> dict[str, Any]:
     """Extract the first valid JSON object from Claude's response."""
+    # Direct parse
     try:
         return json.loads(text.strip())
     except json.JSONDecodeError:
         pass
+    # Strip markdown fences
     cleaned = re.sub(r"```(?:json)?", "", text).strip().rstrip("`").strip()
     try:
         return json.loads(cleaned)
     except json.JSONDecodeError:
         pass
+    # Find first {...} block
     match = re.search(r"\{.*\}", cleaned, re.DOTALL)
     if match:
         try:
@@ -209,28 +208,24 @@ def _extract_json(text: str) -> dict[str, Any]:
 
 def run_rca(incident: dict[str, Any]) -> dict[str, Any] | None:
     """
-    Call Claude for a single incident with real Java source context.
+    Run the full RCA pipeline for a single incident.
 
     Steps:
-    1. Fetch log slice from PostgreSQL
-    2. Identify relevant Java classes from log signals
-    3. Fetch actual source files from GitHub (Sparky17561/HackathonPS)
-    4. Build Claude prompt with logs + numbered source
-    5. Parse and validate Claude's JSON response
-    6. Persist to PostgreSQL + Neo4j
+      1. Fetch log slice from PostgreSQL (fallback: raw incident fields).
+      2. Extract Java class name from the log entries.
+      3. Fetch actual Java source from GitHub (raw URL → REST API fallback).
+      4. Build Claude prompt with logs + source code (or log-only if fetch fails).
+      5. Call Claude, parse and validate the JSON response.
+      6. Persist RCA to PostgreSQL and Neo4j.
 
-    Args:
-        incident: normalised incident dict from the ingestion/triage pipeline.
-
-    Returns:
-        Full RCA dict on success, None on failure.
+    Returns the full RCA dict on success, None on failure.
     """
     trace_id    = incident.get("trace_id", "unknown")
     incident_id = incident.get("incident_id")
 
-    # -----------------------------------------------------------------------
-    # Step 1: Fetch log slice from PostgreSQL
-    # -----------------------------------------------------------------------
+    # ------------------------------------------------------------------
+    # Step 1: Fetch log slice
+    # ------------------------------------------------------------------
     log_slice: list[dict[str, Any]] = []
     if incident_id:
         try:
@@ -249,7 +244,7 @@ def run_rca(incident: dict[str, Any]) -> dict[str, Any] | None:
         except Exception as exc:
             logger.warning("Could not fetch trace events from DB: %s", exc)
 
-    # Fall back to the raw incident fields
+    # Fallback to raw incident fields if DB returned nothing
     if not log_slice:
         log_slice = [
             {
@@ -259,36 +254,64 @@ def run_rca(incident: dict[str, Any]) -> dict[str, Any] | None:
                 "endpoint":  incident.get("endpoint"),
                 "message":   incident.get("message"),
                 "exception": incident.get("exception"),
+                "class":     incident.get("class"),
             }
         ]
 
-    # -----------------------------------------------------------------------
-    # Step 2 + 3: Fetch real Java source from GitHub
-    # -----------------------------------------------------------------------
-    source_files: list[dict] = []
-    try:
-        source_files = fetch_sources_for_incident(
-            log_slice=log_slice,
-            triage_classification=incident.get("triage_classification", ""),
-            max_files=2,          # keep context focused
-        )
-        if source_files:
-            logger.info(
-                "RCA GitHub source context: %s",
-                [s["class_name"] for s in source_files],
-            )
+    # ------------------------------------------------------------------
+    # Step 2: Extract Java class name from logs
+    # ------------------------------------------------------------------
+    class_name: str | None = extract_class_name_from_logs(log_slice)
+
+    # Heuristic fallback based on triage classification
+    if not class_name:
+        classification = (incident.get("triage_classification") or "").lower()
+        if "payment" in classification:
+            class_name = "PaymentService"
+        elif "order" in classification or "stuck" in classification:
+            class_name = "OrderService"
+        elif "stock" in classification or "inventory" in classification:
+            class_name = "InventoryService"
+        elif "async" in classification or "mdc" in classification or "trace" in classification:
+            class_name = "AsyncConfig"
         else:
-            logger.info("No GitHub source files resolved for trace_id=%s — using log-only context", trace_id)
-    except Exception as exc:
-        logger.warning("GitHub source fetch failed for trace_id=%s: %s", trace_id, exc)
+            class_name = None
 
-    # -----------------------------------------------------------------------
+    logger.info("RCA class target for trace_id=%s: %s", trace_id, class_name or "(none)")
+
+    # ------------------------------------------------------------------
+    # Step 3: Fetch Java source from GitHub
+    # ------------------------------------------------------------------
+    source: dict | None = None
+    if class_name:
+        try:
+            source = fetch_java_source(class_name)
+            if source:
+                logger.info(
+                    "GitHub source loaded: %s (%d lines) for trace_id=%s",
+                    source["class_name"], source["line_count"], trace_id,
+                )
+            else:
+                logger.info(
+                    "GitHub source not available for %s — proceeding with log-only RCA",
+                    class_name,
+                )
+        except Exception as exc:
+            logger.warning(
+                "GitHub source fetch error for %s (trace_id=%s): %s — falling back to log-only",
+                class_name, trace_id, exc,
+            )
+
+    # ------------------------------------------------------------------
     # Step 4: Build prompt and call Claude
-    # -----------------------------------------------------------------------
-    user_prompt = _build_user_prompt(incident, log_slice, source_files)
+    # ------------------------------------------------------------------
+    user_prompt = _build_user_prompt(incident, log_slice, class_name, source)
+    max_tokens  = 3072 if source else 2048
 
-    # Increase max_tokens when we have source code (larger response needed)
-    max_tokens = 3072 if source_files else 2048
+    logger.info(
+        "Calling Claude model=%s max_tokens=%d source=%s trace_id=%s",
+        Config.ANTHROPIC_MODEL, max_tokens, bool(source), trace_id,
+    )
 
     try:
         response = _get_client().messages.create(
@@ -308,53 +331,56 @@ def run_rca(incident: dict[str, Any]) -> dict[str, Any] | None:
         logger.error("Anthropic API error for trace_id=%s: %s", trace_id, exc)
         return None
 
-    # -----------------------------------------------------------------------
+    # ------------------------------------------------------------------
     # Step 5: Parse and validate
-    # -----------------------------------------------------------------------
+    # ------------------------------------------------------------------
     try:
         rca = _extract_json(raw_text)
     except ValueError as exc:
         logger.error("RCA JSON parse failed for trace_id=%s: %s", trace_id, exc)
         return None
 
-    # Enforce required fields / defaults
-    rca.setdefault("trace_id",        trace_id)
-    rca.setdefault("timestamp",       str(incident.get("timestamp", "")))
+    # Enforce required fields with safe defaults
+    rca.setdefault("trace_id",         trace_id)
+    rca.setdefault("timestamp",        str(incident.get("timestamp", "")))
     rca.setdefault("confidence_score", 0.5)
-    rca.setdefault("blast_radius",    incident.get("triage_blast_radius", "LOW"))
-    rca.setdefault("classification",  incident.get("triage_classification", "Unknown"))
-    rca.setdefault("log_signals",     {})
-    rca.setdefault("suggested_fix",   {})
-    rca.setdefault("github_pr",       {})
+    rca.setdefault("blast_radius",     incident.get("triage_blast_radius", "LOW"))
+    rca.setdefault("classification",   incident.get("triage_classification", "Unknown"))
+    rca.setdefault("log_signals",      {})
+    rca.setdefault("suggested_fix",    {})
+    rca.setdefault("github_pr",        {})
 
     # Validate blast_radius
     if rca["blast_radius"] not in {"LOW", "MEDIUM", "HIGH", "CRITICAL"}:
         rca["blast_radius"] = "MEDIUM"
 
-    # Clamp confidence score
+    # Clamp confidence score to [0.0, 1.0]
     try:
         rca["confidence_score"] = max(0.0, min(1.0, float(rca["confidence_score"])))
     except (TypeError, ValueError):
         rca["confidence_score"] = 0.5
 
-    # Annotate which source files were used (useful for the dashboard)
-    rca["_source_context"] = [
-        {"class": s["class_name"], "path": s["file_path"], "url": s["github_url"], "lines": s["line_count"]}
-        for s in source_files
-    ]
+    # Attach source context metadata so the dashboard can show which file was used
+    rca["_source_context"] = {
+        "class_name":  source["class_name"]  if source else None,
+        "file_path":   source["file_path"]   if source else None,
+        "github_url":  source["github_url"]  if source else None,
+        "line_count":  source["line_count"]  if source else None,
+        "source_used": source is not None,
+    }
 
     logger.info(
-        "RCA complete: trace_id=%s class=%s blast=%s confidence=%.2f source_files=%s",
+        "RCA complete — trace_id=%s classification=%s blast=%s confidence=%.2f source_used=%s",
         trace_id,
         rca.get("classification"),
         rca.get("blast_radius"),
         rca.get("confidence_score"),
-        [s["class_name"] for s in source_files],
+        source is not None,
     )
 
-    # -----------------------------------------------------------------------
+    # ------------------------------------------------------------------
     # Step 6: Persist to PostgreSQL + Neo4j
-    # -----------------------------------------------------------------------
+    # ------------------------------------------------------------------
     if incident_id:
         try:
             postgres.upsert_incident({
@@ -368,15 +394,15 @@ def run_rca(incident: dict[str, Any]) -> dict[str, Any] | None:
                 "confidence_score": rca.get("confidence_score"),
                 "status":           "investigating",
                 "rca_json":         rca,
-                "summary":          rca.get("root_cause", "")[:500],
+                "summary":          (rca.get("root_cause") or "")[:500],
             })
         except Exception as exc:
-            logger.error("Failed to persist RCA to PostgreSQL: %s", exc)
+            logger.error("Failed to persist RCA to PostgreSQL for trace_id=%s: %s", trace_id, exc)
 
     try:
         neo4j_client.link_rca_to_incident(trace_id, rca)
         neo4j_client.update_incident_status_graph(trace_id, "investigating")
     except Exception as exc:
-        logger.warning("Neo4j RCA update failed: %s", exc)
+        logger.warning("Neo4j RCA update failed for trace_id=%s: %s", trace_id, exc)
 
     return rca
