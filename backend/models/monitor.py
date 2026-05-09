@@ -85,15 +85,15 @@ class MonitorManager:
     def list_monitors(self):
         """List all monitors with their recent history"""
         try:
-            with self.db.postgres_conn.cursor(cursor_factory=RealDictCursor) as cursor:
+            with self.db.get_cursor() as cursor:
                 cursor.execute("SELECT * FROM monitors ORDER BY created_at DESC")
                 monitors = cursor.fetchall()
-                res = []
-                for m in monitors:
-                    monitor = self._serialize(m)
-                    monitor['history'] = self.get_history(m['id'])
-                    res.append(monitor)
-                return res
+            res = []
+            for m in monitors:
+                monitor = self._serialize(m)
+                monitor['history'] = self.get_history(m['id'])
+                res.append(monitor)
+            return res
         except Exception as e:
             raise e
 

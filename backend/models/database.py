@@ -1,6 +1,7 @@
 """Database connection manager for Morphic backend"""
 import psycopg2
 from psycopg2.extras import RealDictCursor
+from contextlib import contextmanager
 import redis
 import neo4j
 from config.settings import Config
@@ -83,3 +84,61 @@ class DatabaseManager:
             self.neo4j_driver.close()
         if self.redis_client:
             self.redis_client.close()
+
+    def ensure_postgres_connected(self):
+        """
+        Check if the PostgreSQL connection is alive and in a clean state.
+        If it is in an aborted transaction or disconnected, roll back / reconnect.
+        """
+        try:
+            # A connection in an aborted transaction has status INTRANS_ISERROR.
+            # Calling rollback() resets it to IDLE without closing.
+            if self.postgres_conn is None or self.postgres_conn.closed:
+                print("PostgreSQL connection lost — reconnecting...")
+                self.connect_postgres()
+                return
+
+            status = self.postgres_conn.get_transaction_status()
+            # INTRANS_ISERROR = 4 means the transaction is in an error state.
+            import psycopg2.extensions as _ext
+            if status == _ext.TRANSACTION_STATUS_INERROR:
+                self.postgres_conn.rollback()
+            elif status == _ext.TRANSACTION_STATUS_UNKNOWN:
+                print("PostgreSQL connection in unknown state — reconnecting...")
+                try:
+                    self.postgres_conn.close()
+                except Exception:
+                    pass
+                self.connect_postgres()
+        except Exception as e:
+            print(f"PostgreSQL health-check failed — reconnecting: {e}")
+            try:
+                self.postgres_conn.close()
+            except Exception:
+                pass
+            self.connect_postgres()
+
+    @contextmanager
+    def get_cursor(self):
+        """
+        Context manager that yields a RealDictCursor on a healthy connection.
+
+        On any exception:
+          1. Rolls back the current transaction to clear the aborted state.
+          2. Re-raises the exception.
+
+        Usage:
+            with db_manager.get_cursor() as cursor:
+                cursor.execute("SELECT ...")
+                rows = cursor.fetchall()
+        """
+        self.ensure_postgres_connected()
+        try:
+            with self.postgres_conn.cursor(cursor_factory=RealDictCursor) as cursor:
+                yield cursor
+        except Exception:
+            try:
+                self.postgres_conn.rollback()
+            except Exception:
+                pass
+            raise

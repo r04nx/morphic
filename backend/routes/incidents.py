@@ -2,37 +2,115 @@
 from datetime import datetime
 from flask import jsonify, request
 
+# Valid status values the frontend understands
+_VALID_STATUSES = {
+    "NEW", "TRIAGED", "RCA_PENDING", "RCA_READY",
+    "ACTIONS_RUNNING", "RESOLVED", "SUPPRESSED",
+}
+
+# Map DB status values -> frontend status values (per frontend spec)
+_STATUS_MAP = {
+    "active":        "RCA_READY",
+    "investigating": "ACTIONS_RUNNING",
+    "resolved":      "RESOLVED",
+    "healed":        "RESOLVED",
+    "suppressed":    "SUPPRESSED",
+    "new":           "NEW",
+    "triaged":       "TRIAGED",
+    "rca_pending":   "RCA_PENDING",
+}
+
+_VALID_BLAST = {"LOW", "MEDIUM", "HIGH", "CRITICAL"}
+
+
+def _normalize_incident(raw: dict) -> dict:
+    """
+    Coerce a raw PostgreSQL row dict into the shape the frontend expects:
+      - blast_radius  : one of LOW/MEDIUM/HIGH/CRITICAL  (never null)
+      - confidence_score : float 0–1                     (never null/NaN)
+      - status        : one of the 7 valid frontend values
+      - summary       : short human-readable string
+    """
+    inc = dict(raw)
+
+    # ── blast_radius: pass through exactly as stored ─────────────────
+    br = inc.get("blast_radius")
+    if br and str(br).upper().strip() in _VALID_BLAST:
+        inc["blast_radius"] = str(br).upper().strip()
+    else:
+        inc["blast_radius"] = "MEDIUM"
+
+    # ── confidence_score: pass through as float ───────────────────────
+    raw_score = inc.get("confidence_score")
+    try:
+        score = float(raw_score)
+        if score != score:   # NaN
+            score = 0.0
+        score = max(0.0, min(1.0, score))
+    except (TypeError, ValueError):
+        score = 0.0
+    inc["confidence_score"] = round(score, 4)
+
+    # ── status: map DB values to frontend enum ────────────────────────
+    raw_status = str(inc.get("status") or "active").strip()
+    inc["status"] = (
+        raw_status if raw_status in _VALID_STATUSES
+        else _STATUS_MAP.get(raw_status.lower(), "RCA_READY")
+    )
+
+    # ── summary: classification only, no template ─────────────────────
+    # Priority: stored summary > classification > trace_id
+    stored_summary = (inc.get("summary") or "").strip()
+    classification  = (inc.get("classification") or "").strip()
+    trace_id        = (inc.get("trace_id") or "").strip()
+    inc["summary"] = stored_summary or classification or trace_id or "Incident"
+
+    # ── datetime serialisation ────────────────────────────────────────
+    for field in ("timestamp", "created_at", "updated_at"):
+        val = inc.get(field)
+        if isinstance(val, datetime):
+            inc[field] = val.isoformat()
+
+    return inc
+
 
 def register_incident_routes(app, incident_manager):
     """Register incident routes"""
-    
+
     @app.route('/api/incidents', methods=['GET', 'POST'])
     def incidents():
         """Handle incidents"""
         if request.method == 'GET':
             try:
-                limit = int(request.args.get('limit', 50))
+                limit  = int(request.args.get('limit', 50))
                 offset = int(request.args.get('offset', 0))
-                incidents = incident_manager.list_incidents(limit, offset)
+                # Optional severity filter: ?blast_radius=CRITICAL
+                br_filter = request.args.get('blast_radius', '').strip().upper() or None
+                if br_filter and br_filter not in _VALID_BLAST:
+                    return jsonify({"error": f"Invalid blast_radius filter '{br_filter}'. Use one of: {sorted(_VALID_BLAST)}"}), 400
+
+                raw        = incident_manager.list_incidents(limit, offset, blast_radius_filter=br_filter)
+                normalized = [_normalize_incident(inc) for inc in raw]
                 return jsonify({
-                    "incidents": incidents,
-                    "total": len(incidents),
-                    "limit": limit,
-                    "offset": offset
+                    "incidents": normalized,
+                    "total":     len(normalized),
+                    "limit":     limit,
+                    "offset":    offset,
+                    "filter":    {"blast_radius": br_filter} if br_filter else {},
                 })
             except Exception as e:
                 return jsonify({"error": str(e)}), 500
-        
+
         elif request.method == 'POST':
             try:
                 incident_data = request.get_json()
                 if not incident_data or not incident_data.get('trace_id'):
                     return jsonify({"error": "trace_id is required"}), 400
-                
                 incident = incident_manager.create_incident(incident_data)
-                return jsonify(incident), 201
+                return jsonify(_normalize_incident(incident)), 201
             except Exception as e:
                 return jsonify({"error": str(e)}), 500
+
 
     @app.route('/api/incidents/<trace_id>')
     def get_incident(trace_id):
@@ -40,9 +118,8 @@ def register_incident_routes(app, incident_manager):
         try:
             incident = incident_manager.get_incident(trace_id)
             if incident:
-                return jsonify(incident)
-            else:
-                return jsonify({"error": "Incident not found"}), 404
+                return jsonify(_normalize_incident(incident))
+            return jsonify({"error": "Incident not found"}), 404
         except Exception as e:
             return jsonify({"error": str(e)}), 500
 
@@ -50,33 +127,31 @@ def register_incident_routes(app, incident_manager):
     def logs():
         """Handle log operations"""
         if request.method == 'GET':
-            # Fetch logs from external API
             try:
-                import requests
+                import requests as _req
                 import os
-                response = requests.get(os.getenv('LOG_API_URL', 'https://hackathonps-ykxr.onrender.com/logs'), timeout=10)
+                response = _req.get(
+                    os.getenv('LOG_API_URL', 'https://hackathonps-ykxr.onrender.com/logs'),
+                    timeout=10,
+                )
                 if response.status_code == 200:
-                    logs = response.json()
+                    log_data = response.json()
                     return jsonify({
-                        "logs": logs if isinstance(logs, list) else [logs],
-                        "source": "external_api",
-                        "timestamp": datetime.utcnow().isoformat()
+                        "logs":      log_data if isinstance(log_data, list) else [log_data],
+                        "source":    "external_api",
+                        "timestamp": datetime.utcnow().isoformat(),
                     })
-                else:
-                    return jsonify({"error": f"API returned {response.status_code}"}), 502
+                return jsonify({"error": f"API returned {response.status_code}"}), 502
             except Exception as e:
                 return jsonify({"error": str(e)}), 500
-        
+
         elif request.method == 'POST':
-            # Store logs for an incident
             try:
                 data = request.get_json()
                 incident_id = data.get('incident_id')
-                log_data = data.get('log_data')
-                
+                log_data    = data.get('log_data')
                 if not incident_id or not log_data:
                     return jsonify({"error": "incident_id and log_data are required"}), 400
-                
                 log_entry = incident_manager.add_incident_log(incident_id, log_data)
                 return jsonify(log_entry), 201
             except Exception as e:

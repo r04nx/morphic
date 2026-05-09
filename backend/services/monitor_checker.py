@@ -48,21 +48,27 @@ class MonitorChecker:
             for monitor in monitors:
                 monitor_id = monitor['id']
                 url = monitor.get('url')
-                
+
                 if not url:
                     continue
-                
+
                 status, latency_ms = self.check_url(url)
                 uptime_pct = self.calculate_uptime(monitor_id)
-                
-                # Update monitor in database
+
                 self.monitor_manager.update_monitor(monitor_id, {
                     'status': status,
                     'latency_ms': latency_ms,
-                    'uptime_pct': uptime_pct
+                    'uptime_pct': uptime_pct,
                 })
         except Exception as e:
+            # Ensure the shared Postgres connection is reset to a clean state
+            # so that errors here never cascade into /api/incidents 500s.
+            try:
+                self.monitor_manager.db.ensure_postgres_connected()
+            except Exception:
+                pass
             print(f"Monitor check error: {e}")
+
     
     def run(self):
         """Run the monitoring loop"""
