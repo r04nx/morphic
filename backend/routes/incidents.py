@@ -1,5 +1,5 @@
 """
-/api/incidents  — CRUD + manual action triggers
+/api/incidents  — CRUD + manual action triggers + report generation
 """
 
 import json
@@ -10,6 +10,7 @@ from flask import Blueprint, jsonify, request
 
 from db import postgres
 from agents import notification, github_pr
+from agents import report_generator
 from config import Config
 
 logger = logging.getLogger(__name__)
@@ -125,3 +126,32 @@ def trigger_github_pr(incident_id: str):
     except Exception as exc:
         logger.error("trigger_github_pr error: %s", exc)
         return jsonify({"error": str(exc)}), 500
+
+
+# ---------------------------------------------------------------------------
+# Report generation
+# ---------------------------------------------------------------------------
+
+@bp.get("/report/generate")
+def generate_report():
+    """
+    GET /api/incidents/report/generate
+
+    Fetches the last 5 resolved incidents with RCA data, transforms them into
+    the ObseraSEC report JSON format, saves the file to:
+        C:/Users/User/obserasec-report-suite/public/morphic_report_data.json
+
+    Returns:
+        {"url": "http://localhost:8081/?dataUrl=/morphic_report_data.json",
+         "incidents_included": <count>}
+    """
+    try:
+        url = report_generator.generate_report()
+        return jsonify({
+            "success": True,
+            "url":     url,
+            "message": "Report generated successfully. Open the URL to view it.",
+        })
+    except Exception as exc:
+        logger.error("generate_report error: %s", exc)
+        return jsonify({"success": False, "error": str(exc)}), 500
