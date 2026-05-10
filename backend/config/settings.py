@@ -63,3 +63,19 @@ class Config:
     
     # Monitoring
     MONITOR_CHECK_INTERVAL = int(os.getenv('MONITOR_CHECK_INTERVAL', '30'))
+    
+    # Alert Channels
+    # Email
+    EMAIL_USER = os.getenv('EMAIL_USER', '')
+    EMAIL_PASSWORD = os.getenv('EMAIL_PASSWORD', '')
+    EMAIL_FROM = os.getenv('EMAIL_FROM', EMAIL_USER)
+    ALERT_EMAIL = os.getenv('ALERT_EMAIL', EMAIL_USER)
+    SMTP_HOST = os.getenv('SMTP_HOST', 'smtp.gmail.com')
+    SMTP_PORT = int(os.getenv('SMTP_PORT', '587'))
+    
+    # Slack
+    SLACK_WEBHOOK_URL = os.getenv('SLACK_WEBHOOK_URL', '')
+    
+    # Generic Webhook
+    WEBHOOK_URL = os.getenv('WEBHOOK_URL', '')
+    WEBHOOK_HEADERS = {}  # Parsed from WEBHOOK_HEADERS_JSON if needed

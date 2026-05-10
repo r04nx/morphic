@@ -33,6 +33,10 @@ from routes.monitors import register_monitor_routes
 from routes.analyze import register_analyze_routes
 from routes.agent import register_agent_routes
 from routes.notifications import register_notification_routes
+from routes.orchestrate import register_orchestrate_routes
+
+# Import new orchestration service
+from services.agent_orchestrator_service import AgentOrchestratorService
 
 # Initialize Flask app
 app = Flask(__name__)
@@ -47,6 +51,9 @@ db_manager.connect_all()
 incident_manager = IncidentManager(db_manager)
 monitor_manager = MonitorManager(db_manager)
 log_analyzer = LogAIAnalyzer()
+
+# Initialize orchestration service
+orchestrator_service = AgentOrchestratorService(db_manager)
 
 # Initialize monitor checker (background monitoring)
 monitor_checker = MonitorChecker(monitor_manager, interval_seconds=Config.MONITOR_CHECK_INTERVAL)
@@ -93,6 +100,9 @@ register_notification_routes(app, monitor_manager)
 if agent_orchestrator:
     register_agent_routes(app, agent_orchestrator)
 
+# Register orchestration routes
+register_orchestrate_routes(app, orchestrator_service)
+
 @app.route('/')
 def index():
     """Health check and API info"""
@@ -106,7 +116,9 @@ def index():
             "incidents": "/api/incidents",
             "analyze": "/api/analyze",
             "logs": "/api/logs",
-            "monitors": "/api/monitors"
+            "monitors": "/api/monitors",
+            "orchestrate": "/api/orchestrate",
+            "alerts": "/api/alerts/send"
         }
     })
 
