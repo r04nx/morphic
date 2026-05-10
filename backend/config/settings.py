@@ -49,6 +49,17 @@ class Config:
     GITHUB_REPO     = os.getenv('GITHUB_REPO', '')       # format: owner/repo
     GITHUB_API_BASE = os.getenv('GITHUB_API_BASE', 'https://api.github.com')
 
+    # Email / SMTP
+    EMAIL_FROM     = os.getenv('EMAIL_FROM', '')
+    EMAIL_PASSWORD = os.getenv('EMAIL_PASSWORD', '')
+    EMAIL_TO       = os.getenv('EMAIL_TO', '')
+    SMTP_HOST      = os.getenv('SMTP_HOST', 'smtp.gmail.com')
+    SMTP_PORT      = int(os.getenv('SMTP_PORT', '587'))
+
+    # Telegram
+    TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN', '')
+    TELEGRAM_CHAT_ID   = os.getenv('TELEGRAM_CHAT_ID', '')
+
     # LLM Provider
     LLM_PROVIDER = os.getenv('LLM_PROVIDER', 'openrouter')
 
