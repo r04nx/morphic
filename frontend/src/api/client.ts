@@ -101,9 +101,48 @@ export const api = {
     return mockTraceEvents(traceId);
   },
 
+  async getGraphIncidents(): Promise<{ nodes: any[]; edges: any[] }> {
+    const real = await tryFetch<{ nodes: any[]; edges: any[] }>("/api/graph/incidents");
+    if (real && real.nodes) return real;
+    // Mock fallback: derive graph from mock incidents
+    await sleep(200);
+    const nodes: any[] = [];
+    const edges: any[] = [];
+    const services = new Set<string>();
+    mockIncidents.slice(0, 20).forEach((inc) => {
+      nodes.push({
+        data: {
+          id: `incident-${inc.trace_id}`,
+          label: inc.summary?.split(":")[0] ?? "Incident",
+          type: "incident",
+          severity: inc.blast_radius ?? "MEDIUM",
+          confidence: inc.confidence_score ?? 0.7,
+          status: inc.status ?? "RCA_READY",
+          trace_id: inc.trace_id,
+          root_cause: "",
+          classification: inc.summary ?? "",
+        },
+      });
+      const svc = `payment-service`;
+      if (!services.has(svc)) {
+        services.add(svc);
+        nodes.push({ data: { id: `service-${svc}`, label: svc, type: "service" } });
+      }
+      edges.push({
+        data: {
+          id: `edge-${inc.trace_id}-${svc}`,
+          source: `incident-${inc.trace_id}`,
+          target: `service-${svc}`,
+          label: "ORIGINATED_IN",
+        },
+      });
+    });
+    return { nodes, edges };
+  },
+
   async listActions(limit = 200): Promise<ActionExecution[]> {
     const real = await tryFetch<ActionExecution[]>(`/api/actions?limit=${limit}`);
-    if (real) return real;
+    if (Array.isArray(real)) return real;   // includes empty []
     await sleep(120);
     return mockActions.slice(0, limit);
   },

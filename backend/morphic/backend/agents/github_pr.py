@@ -1,131 +1,144 @@
 """
 GitHub PR Agent — Layer 3 (Action)
-Uses the GitHub REST API to:
+Uses PyGithub to:
   1. Get the default branch SHA
-  2. Create a feature branch
-  3. Commit Claude's suggested patch to the target Java file
-  4. Open a Pull Request with trace_id + RCA summary in the body
+  2. Create a feature branch  (morphic/fix-<trace_id>)
+  3. Search the repo for the target Java class and commit Claude's patch
+  4. Open a Pull Request with the full RCA in the body
+
+Never raises exceptions — all errors are logged as warnings and the function
+returns a result dict with success=False.
 """
 
-import base64
 import logging
+import os
+import re
 from typing import Any
-
-import requests
 
 from config import Config
 from db import postgres
 
 logger = logging.getLogger(__name__)
 
-_GITHUB_API = Config.GITHUB_API_BASE
 
+# ---------------------------------------------------------------------------
+# Helper: find matching Java file in repo
+# ---------------------------------------------------------------------------
 
-def _headers() -> dict[str, str]:
-    return {
-        "Authorization": f"Bearer {Config.GITHUB_TOKEN}",
-        "Accept":        "application/vnd.github+json",
-        "X-GitHub-Api-Version": "2022-11-28",
-    }
+def find_java_file(repo: Any, class_name: str) -> Any | None:
+    """
+    Search the repo tree for a .java file matching class_name.
+    Tries both fully-qualified (com/example/Foo.java) and simple name (Foo.java).
+    Returns a github.ContentFile or None.
+    """
+    # Simple class name (last segment after last dot)
+    simple = class_name.split(".")[-1] if "." in class_name else class_name
+    fq_path = "src/main/java/" + class_name.replace(".", "/") + ".java"
 
+    # 1. Try the fully-qualified path directly
+    try:
+        return repo.get_contents(fq_path)
+    except Exception:
+        pass
 
-def _api(method: str, path: str, **kwargs) -> requests.Response:
-    url = f"{_GITHUB_API}{path}"
-    resp = requests.request(method, url, headers=_headers(), timeout=20, **kwargs)
-    return resp
+    # 2. Walk the git tree and match by filename
+    try:
+        tree = repo.get_git_tree(repo.default_branch, recursive=True)
+        for element in tree.tree:
+            if element.type == "blob" and element.path.endswith(f"{simple}.java"):
+                return repo.get_contents(element.path)
+    except Exception as exc:
+        logger.debug("Tree walk failed: %s", exc)
+
+    return None
 
 
 # ---------------------------------------------------------------------------
-# Git helpers
+# Helper: apply patch to file content
 # ---------------------------------------------------------------------------
 
-def _get_default_branch_sha(repo: str) -> tuple[str, str]:
-    """Return (branch_name, sha) for the repo's default branch."""
-    resp = _api("GET", f"/repos/{repo}")
-    resp.raise_for_status()
-    default_branch = resp.json()["default_branch"]
+def apply_patch(original: str, patch: str) -> str:
+    """
+    Apply Claude's suggested patch to the original file content.
 
-    resp2 = _api("GET", f"/repos/{repo}/git/ref/heads/{default_branch}")
-    resp2.raise_for_status()
-    sha = resp2.json()["object"]["sha"]
-    return default_branch, sha
+    Strategy (in order):
+      1. If patch is a unified diff (starts with @@), apply it line-by-line.
+      2. If patch looks like a complete file replacement (contains 'class '),
+         return the patch directly.
+      3. Otherwise append the patch as a comment block so the file is still valid.
+    """
+    if not patch:
+        return original
 
+    patch = patch.strip()
 
-def _create_branch(repo: str, branch_name: str, sha: str) -> None:
-    payload = {"ref": f"refs/heads/{branch_name}", "sha": sha}
-    resp = _api("POST", f"/repos/{repo}/git/refs", json=payload)
-    if resp.status_code == 422:
-        logger.info("Branch %s already exists — reusing", branch_name)
-    else:
-        resp.raise_for_status()
+    # Complete file replacement heuristic
+    if re.search(r'\bclass\s+\w+', patch) and len(patch) > 200:
+        logger.debug("apply_patch: treating patch as full file replacement")
+        return patch
 
-
-def _get_file_sha(repo: str, path: str, branch: str) -> str | None:
-    """Return the existing blob SHA for a file, or None if it doesn't exist."""
-    resp = _api("GET", f"/repos/{repo}/contents/{path}", params={"ref": branch})
-    if resp.status_code == 404:
-        return None
-    resp.raise_for_status()
-    return resp.json().get("sha")
-
-
-def _commit_file(
-    repo: str,
-    branch: str,
-    file_path: str,
-    content: str,
-    commit_message: str,
-    existing_sha: str | None,
-) -> dict[str, Any]:
-    encoded = base64.b64encode(content.encode()).decode()
-    payload: dict[str, Any] = {
-        "message": commit_message,
-        "content": encoded,
-        "branch":  branch,
-    }
-    if existing_sha:
-        payload["sha"] = existing_sha
-    resp = _api("PUT", f"/repos/{repo}/contents/{file_path}", json=payload)
-    resp.raise_for_status()
-    return resp.json()
-
-
-def _open_pr(
-    repo: str,
-    title: str,
-    body: str,
-    head_branch: str,
-    base_branch: str,
-    labels: list[str],
-) -> dict[str, Any]:
-    payload = {
-        "title": title,
-        "body":  body,
-        "head":  head_branch,
-        "base":  base_branch,
-    }
-    resp = _api("POST", f"/repos/{repo}/pulls", json=payload)
-    resp.raise_for_status()
-    pr = resp.json()
-    pr_number = pr["number"]
-
-    # Apply labels if the repo has them
-    if labels:
+    # Unified diff heuristic
+    if patch.startswith("@@") or patch.startswith("---"):
         try:
-            _api(
-                "POST",
-                f"/repos/{repo}/issues/{pr_number}/labels",
-                json={"labels": labels},
-            )
+            return _apply_unified_diff(original, patch)
         except Exception as exc:
-            logger.warning("Failed to apply labels to PR #%d: %s", pr_number, exc)
+            logger.debug("Unified diff failed (%s), appending as comment block", exc)
 
-    return pr
+    # Fallback: append as a comment so the file at least compiles
+    return original + f"\n\n/* ===== Morphic AI suggested patch =====\n{patch}\n===== end patch ===== */\n"
+
+
+def _apply_unified_diff(original: str, patch: str) -> str:
+    """
+    Minimal unified diff application (handles @@ hunks).
+    Not a full GNU patch — good enough for Claude's typical output.
+    """
+    orig_lines = original.splitlines(keepends=True)
+    result = list(orig_lines)
+    offset = 0
+
+    for hunk in re.split(r'(?=^@@)', patch, flags=re.MULTILINE):
+        header = re.match(r'^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@', hunk)
+        if not header:
+            continue
+        old_start = int(header.group(1)) - 1   # 0-indexed
+        new_lines: list[str] = []
+        hunk_lines = hunk.splitlines(keepends=True)[1:]   # skip @@ line
+
+        for line in hunk_lines:
+            if line.startswith("+"):
+                new_lines.append(line[1:])
+            elif line.startswith("-"):
+                pass  # remove
+            else:
+                new_lines.append(line[1:] if line.startswith(" ") else line)
+
+        old_count = int(header.group(2) or 1)
+        insert_at = old_start + offset
+        result[insert_at: insert_at + old_count] = new_lines
+        offset += len(new_lines) - old_count
+
+    return "".join(result)
 
 
 # ---------------------------------------------------------------------------
-# Public entry point
+# Public entry points
 # ---------------------------------------------------------------------------
+
+def raise_pr(rca_result: dict[str, Any]) -> str | None:
+    """
+    Simplified entry point called by the orchestrator.
+
+    Returns the PR html_url on success, or None on failure/skip.
+    """
+    result = create_pr(
+        incident=rca_result,
+        rca=rca_result,
+        incident_id=rca_result.get("incident_id"),
+        dashboard_url=Config.DASHBOARD_URL,
+    )
+    return result.get("pr_url") if result.get("success") else None
+
 
 def create_pr(
     incident: dict[str, Any],
@@ -134,71 +147,187 @@ def create_pr(
     dashboard_url: str = "",
 ) -> dict[str, Any]:
     """
-    Create a GitHub PR with Claude's suggested patch.
+    Full entry point — creates a branch, optionally commits a patch, opens a PR.
 
-    Returns a dict with keys: pr_url, pr_number, branch, success, error.
+    Returns:
+        {"success": True,  "pr_url": ..., "pr_number": ..., "branch": ...}
+        {"success": False, "error": ...}
     """
-    repo = Config.GITHUB_REPO
-    if not repo:
-        return {"success": False, "error": "GITHUB_REPO not configured"}
-    if not Config.GITHUB_TOKEN:
-        return {"success": False, "error": "GITHUB_TOKEN not configured"}
+    token     = Config.GITHUB_TOKEN or os.getenv("GITHUB_TOKEN", "")
+    repo_name = Config.GITHUB_REPO  or os.getenv("GITHUB_REPO", "")
 
-    trace_id = rca.get("trace_id") or incident.get("trace_id", "unknown")
-    suggested_fix = rca.get("suggested_fix", {})
-    github_pr_meta = rca.get("github_pr", {})
-
-    target_class: str = suggested_fix.get("target_class", "UnknownClass")
-    patch: str = suggested_fix.get("patch", "// No patch generated")
-
-    # Derive a sensible file path from the class name
-    # e.g.  com.example.PaymentService → src/main/java/com/example/PaymentService.java
-    java_file_path = _class_to_path(target_class)
-
-    branch_name = f"morphic/fix-{trace_id[:16].replace(':', '-').replace('.', '-')}"
-    pr_title = github_pr_meta.get("title") or f"fix: {rca.get('classification', 'incident')} [{trace_id[:8]}]"
-    pr_body = _build_pr_body(trace_id, rca, dashboard_url, github_pr_meta)
-    labels: list[str] = github_pr_meta.get("labels", ["morphic-auto", "incident-fix"])
+    if not token or not repo_name or token in ("dummy", "your-token-here"):
+        logger.warning("GitHub PR skipped — GITHUB_TOKEN or GITHUB_REPO not configured")
+        return {"success": False, "error": "GITHUB_TOKEN / GITHUB_REPO not configured"}
 
     try:
-        default_branch, sha = _get_default_branch_sha(repo)
-    except Exception as exc:
-        return {"success": False, "error": f"Cannot read repo default branch: {exc}"}
+        from github import Github, GithubException  # type: ignore[import]
+    except ImportError:
+        return {"success": False, "error": "PyGithub not installed — run: pip install PyGithub"}
 
+    # ── Unpack RCA fields ───────────────────────────────────────────────────
+    trace_id       = rca.get("trace_id") or incident.get("trace_id", "unknown")
+    classification = rca.get("classification", "Unknown Issue")
+    root_cause     = rca.get("root_cause", "")
+    blast_radius   = rca.get("blast_radius", "LOW")
+    confidence     = float(rca.get("confidence_score") or 0)
+    impact         = rca.get("impact", "See logs for details")
+    suggested_fix  = rca.get("suggested_fix", {})
+    patch          = suggested_fix.get("patch", "")
+    target_class   = suggested_fix.get("target_class", "")
+    rationale      = suggested_fix.get("rationale", "")
+    tests          = suggested_fix.get("tests", [])
+    github_meta    = rca.get("github_pr", {})
+    signals        = rca.get("log_signals", {})
+
+    branch_name = (
+        "morphic/fix-"
+        + re.sub(r"[^a-zA-Z0-9_-]", "-", trace_id[:20])
+    )
+    pr_title = (
+        github_meta.get("title")
+        or f"[Morphic] {classification[:60]} [{trace_id[:8]}]"
+    )
+    labels: list[str] = github_meta.get("labels", ["morphic-auto", "incident-fix"])
+
+    # ── Connect via PyGithub ────────────────────────────────────────────────
     try:
-        _create_branch(repo, branch_name, sha)
+        g    = Github(token)
+        repo = g.get_repo(repo_name)
     except Exception as exc:
+        logger.warning("PyGithub: cannot connect to repo %s: %s", repo_name, exc)
+        return {"success": False, "error": f"Cannot access repo: {exc}"}
+
+    default_branch = repo.default_branch
+
+    # ── Create branch ───────────────────────────────────────────────────────
+    try:
+        base_sha = repo.get_branch(default_branch).commit.sha
+        repo.create_git_ref(f"refs/heads/{branch_name}", base_sha)
+        logger.info("Branch created: %s", branch_name)
+    except GithubException as exc:
+        if exc.status == 422:
+            logger.info("Branch %s already exists — reusing", branch_name)
+        else:
+            logger.warning("Branch creation failed: %s", exc)
+            return {"success": False, "error": f"Branch creation failed: {exc}"}
+    except Exception as exc:
+        logger.warning("Branch creation failed: %s", exc)
         return {"success": False, "error": f"Branch creation failed: {exc}"}
 
-    existing_sha = _get_file_sha(repo, java_file_path, branch_name)
-    commit_message = (
-        f"fix({target_class}): auto-remediation for trace {trace_id[:16]}\n\n"
-        f"Generated by Morphic RCA agent.\n"
-        f"Classification: {rca.get('classification')}\n"
-        f"Blast radius: {rca.get('blast_radius')}\n"
-        f"Confidence: {rca.get('confidence_score')}"
+    # ── Commit patch (optional — skip gracefully if file not found) ─────────
+    if patch and target_class:
+        try:
+            java_file = find_java_file(repo, target_class)
+            if java_file:
+                original_content = java_file.decoded_content.decode("utf-8", errors="replace")
+                new_content      = apply_patch(original_content, patch)
+                commit_msg = (
+                    f"fix({target_class}): {classification[:50]} [Morphic AI]\n\n"
+                    f"Trace-ID: {trace_id}\n"
+                    f"Blast-Radius: {blast_radius}\n"
+                    f"Confidence: {confidence:.0%}"
+                )
+                repo.update_file(
+                    java_file.path,
+                    commit_msg,
+                    new_content,
+                    java_file.sha,
+                    branch=branch_name,
+                )
+                logger.info("Patch committed to %s on branch %s", java_file.path, branch_name)
+            else:
+                logger.info(
+                    "Target class %s not found in repo — opening PR without file commit",
+                    target_class,
+                )
+        except Exception as exc:
+            logger.warning("Could not commit patch to %s: %s", target_class, exc)
+            # Non-fatal — still open the PR
+
+    # ── Build PR body ───────────────────────────────────────────────────────
+    incident_url = f"{dashboard_url}/incidents?trace={trace_id}" if dashboard_url else ""
+    tests_md = "\n".join(f"- `{t}`" for t in tests) or "- No tests specified"
+    signals_rows = "\n".join(
+        f"| {k.replace('_',' ').title()} | `{v}` |"
+        for k, v in signals.items() if v
     )
 
-    try:
-        _commit_file(
-            repo,
-            branch_name,
-            java_file_path,
-            patch,
-            commit_message,
-            existing_sha,
-        )
-    except Exception as exc:
-        return {"success": False, "error": f"File commit failed: {exc}"}
+    pr_body = f"""## 🤖 Morphic AI — Automated Fix
 
+**Incident:** {classification}
+**Trace ID:** `{trace_id}`
+**Blast Radius:** {blast_radius}
+**Confidence:** {confidence * 100:.0f}%
+
+### Root Cause
+{root_cause}
+
+### Impact
+{impact}
+
+### Log Signals
+| Field | Value |
+|-------|-------|
+{signals_rows or "| — | — |"}
+
+### Suggested Fix — `{target_class or "unknown"}`
+{f"**Rationale:** {rationale}" if rationale else ""}
+
+```java
+{patch[:2000] if patch else "// See RCA for full patch"}
+```
+
+### Suggested Tests
+{tests_md}
+
+---
+{f"📊 [View Incident on Dashboard]({incident_url})" if incident_url else ""}
+
+{github_meta.get("body", "")}
+
+---
+*Auto-generated by [Morphic](https://github.com) Self-Healing Incident Assistant.*
+*Do NOT merge without human review.*
+"""
+
+    # ── Open PR ─────────────────────────────────────────────────────────────
     try:
-        pr = _open_pr(repo, pr_title, pr_body, branch_name, default_branch, labels)
+        pr = repo.create_pull(
+            title=pr_title,
+            body=pr_body,
+            head=branch_name,
+            base=default_branch,
+        )
+        logger.info("PR #%d created: %s for trace_id=%s", pr.number, pr.html_url, trace_id)
+    except GithubException as exc:
+        # 422 = PR already exists for this branch
+        if exc.status == 422:
+            logger.info("PR for branch %s already open — skipping duplicate", branch_name)
+            # Try to find the existing PR URL
+            try:
+                pulls = repo.get_pulls(head=f"{repo.owner.login}:{branch_name}", state="open")
+                existing = next(iter(pulls), None)
+                if existing:
+                    return {"success": True, "pr_url": existing.html_url,
+                            "pr_number": existing.number, "branch": branch_name}
+            except Exception:
+                pass
+        logger.warning("PR creation failed: %s", exc)
+        return {"success": False, "error": f"PR creation failed: {exc}"}
     except Exception as exc:
+        logger.warning("PR creation failed: %s", exc)
         return {"success": False, "error": f"PR creation failed: {exc}"}
 
-    pr_url = pr.get("html_url", "")
-    pr_number = pr.get("number")
-    logger.info("PR created: #%s %s for trace_id=%s", pr_number, pr_url, trace_id)
+    # Apply labels (best effort)
+    if labels:
+        try:
+            pr.add_to_labels(*labels)
+        except Exception as exc:
+            logger.debug("Label application failed (non-fatal): %s", exc)
+
+    pr_url    = pr.html_url
+    pr_number = pr.number
 
     # Record action in DB
     if incident_id:
@@ -207,87 +336,22 @@ def create_pr(
                 "incident_id": incident_id,
                 "action_type": "github_pr",
                 "status":      "running",
-                "details":     {"pr_url": pr_url, "pr_number": pr_number, "branch": branch_name},
+                "details":     {"pr_url": pr_url, "pr_number": pr_number,
+                                "branch": branch_name, "link": pr_url},
             })
             postgres.complete_action(
                 str(action_row["id"]),
                 "completed",
-                {"pr_url": pr_url, "pr_number": pr_number, "branch": branch_name},
+                {"pr_url": pr_url, "pr_number": pr_number,
+                 "branch": branch_name, "link": pr_url, "summary": pr_title},
             )
         except Exception as exc:
-            logger.warning("Failed to record github_pr action: %s", exc)
+            logger.warning("Failed to record github_pr action in DB: %s", exc)
 
     return {
         "success":   True,
         "pr_url":    pr_url,
         "pr_number": pr_number,
         "branch":    branch_name,
+        "error":     None,
     }
-
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-def _class_to_path(class_name: str) -> str:
-    """
-    Convert a Java fully-qualified class name to a relative file path.
-    'com.example.service.PaymentService' → 'src/main/java/com/example/service/PaymentService.java'
-    If the name has no dots it is treated as a simple class in the root source dir.
-    """
-    if "." in class_name:
-        return "src/main/java/" + class_name.replace(".", "/") + ".java"
-    return f"src/main/java/{class_name}.java"
-
-
-def _build_pr_body(
-    trace_id: str,
-    rca: dict[str, Any],
-    dashboard_url: str,
-    meta: dict[str, Any],
-) -> str:
-    fix = rca.get("suggested_fix", {})
-    signals = rca.get("log_signals", {})
-    incident_link = f"{dashboard_url}/incidents?trace={trace_id}" if dashboard_url else ""
-
-    custom_body = meta.get("body", "")
-
-    return f"""## 🤖 Morphic Auto-Remediation PR
-
-**Trace ID:** `{trace_id}`
-**Classification:** {rca.get("classification", "unknown")}
-**Blast Radius:** {rca.get("blast_radius", "unknown")}
-**Confidence Score:** {rca.get("confidence_score", 0.0):.0%}
-
----
-
-### Root Cause
-{rca.get("root_cause", "Not determined")}
-
-### Impact
-{rca.get("impact", "Not determined")}
-
-### Log Signals
-| Field | Value |
-|-------|-------|
-| Service | `{signals.get("service", "unknown")}` |
-| Endpoint | `{signals.get("endpoint", "")}` |
-| Exception | `{signals.get("exception_class", "")}` |
-| Error | {signals.get("error_message", "")[:200]} |
-
-### Suggested Fix — `{fix.get("target_class", "")}`
-**Rationale:** {fix.get("rationale", "")}
-
-### Suggested Tests
-{chr(10).join(f"- `{t}`" for t in fix.get("tests", [])) or "- No tests specified"}
-
----
-
-{f'📊 [View Incident on Dashboard]({incident_link})' if incident_link else ""}
-
-{custom_body}
-
----
-*This PR was automatically generated by [Morphic](https://github.com) in response to a production incident.*
-*Do NOT merge without human review.*
-"""

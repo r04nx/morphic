@@ -150,6 +150,62 @@ def register_incident_routes(app, incident_manager):
             return jsonify({"error": str(e)}), 500
 
 
+    @app.route('/api/incidents/<incident_id>/actions/github-pr', methods=['POST'])
+    def trigger_github_pr(incident_id):
+        """POST /api/incidents/<incident_id>/actions/github-pr"""
+        try:
+            raw = incident_manager.get_incident(incident_id)
+            if not raw:
+                return jsonify({"error": "Incident not found"}), 404
+
+            rca_json = raw.get("rca_json") or {}
+            # Ensure trace_id is present in the rca payload
+            rca_json["trace_id"]    = rca_json.get("trace_id") or raw.get("trace_id")
+            rca_json["incident_id"] = str(raw.get("id") or incident_id)
+
+            # Import from the morphic sub-package (has PyGithub)
+            import sys, os as _os
+            _mb = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "..", "morphic", "backend")
+            if _mb not in sys.path:
+                sys.path.insert(0, _mb)
+            from agents.github_pr import raise_pr
+
+            pr_url = raise_pr(rca_json)
+
+            if pr_url:
+                return jsonify({"success": True, "pr_url": pr_url})
+            return jsonify({"success": False, "error": "PR creation failed or GITHUB_TOKEN not configured"}), 422
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+
+
+    @app.route('/api/incidents/<incident_id>/actions/email', methods=['POST'])
+    def trigger_email_alert(incident_id):
+        """POST /api/incidents/<incident_id>/actions/email"""
+        try:
+            raw = incident_manager.get_incident(incident_id)
+            if not raw:
+                return jsonify({"error": "Incident not found"}), 404
+
+            rca_json = raw.get("rca_json") or {}
+            rca_json["trace_id"]    = rca_json.get("trace_id") or raw.get("trace_id")
+            rca_json["incident_id"] = str(raw.get("id") or incident_id)
+
+            import sys, os as _os
+            _mb = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "..", "morphic", "backend")
+            if _mb not in sys.path:
+                sys.path.insert(0, _mb)
+            from agents.notification import send_alert
+
+            result = send_alert(rca=rca_json, incident=dict(raw))
+
+            if result.get("success"):
+                return jsonify({"success": True, "email": result.get("email"), "telegram": result.get("telegram")})
+            return jsonify({"success": False, "error": result.get("error", "Email send failed")}), 422
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+
+
     @app.route('/api/logs', methods=['GET', 'POST'])
     def logs():
         """Handle log operations"""

@@ -34,6 +34,34 @@ from routes.analyze import register_analyze_routes
 from routes.agent import register_agent_routes
 from routes.notifications import register_notification_routes
 
+# Graph + Actions blueprints live in morphic/backend/routes/.
+# We load them by absolute file path to avoid shadowing the outer `routes/` package.
+try:
+    import importlib.util as _ilu
+
+    def _load_module(name: str, fpath: str):
+        spec = _ilu.spec_from_file_location(name, fpath)
+        mod  = _ilu.module_from_spec(spec)
+        # Make sure the morphic backend is resolvable for the module's own imports
+        _mb = os.path.join(os.path.dirname(os.path.abspath(__file__)), "morphic", "backend")
+        if _mb not in sys.path:
+            sys.path.insert(0, _mb)
+        spec.loader.exec_module(mod)
+        return mod
+
+    _mb_routes = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "morphic", "backend", "routes"
+    )
+    _traces_mod  = _load_module("morphic_routes_traces",  os.path.join(_mb_routes, "traces.py"))
+    _actions_mod = _load_module("morphic_routes_actions", os.path.join(_mb_routes, "actions.py"))
+
+    graph_bp   = _traces_mod.graph_bp
+    actions_bp = _actions_mod.bp
+    _graph_bp_available = True
+except Exception as _graph_import_err:
+    _graph_bp_available = False
+    print(f"⚠️  Graph/Actions blueprints unavailable: {_graph_import_err}")
+
 # Initialize Flask app
 app = Flask(__name__)
 app.config['SECRET_KEY'] = Config.SECRET_KEY
@@ -92,6 +120,11 @@ register_analyze_routes(app, log_analyzer)
 register_notification_routes(app, monitor_manager)
 if agent_orchestrator:
     register_agent_routes(app, agent_orchestrator)
+if _graph_bp_available:
+    app.register_blueprint(graph_bp)
+    app.register_blueprint(actions_bp)
+    print("✅ Graph blueprint registered (/api/graph/incidents)")
+    print("✅ Actions blueprint registered (/api/actions)")
 
 @app.route('/')
 def index():

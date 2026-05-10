@@ -41,6 +41,14 @@ class Config:
     # External Services
     LOG_API_URL = os.getenv('LOG_API_URL', 'https://hackathonps-ykxr.onrender.com/logs')
 
+    # Dashboard
+    DASHBOARD_URL = os.getenv('DASHBOARD_URL', 'http://localhost:8081')
+
+    # GitHub
+    GITHUB_TOKEN    = os.getenv('GITHUB_TOKEN', '')
+    GITHUB_REPO     = os.getenv('GITHUB_REPO', '')       # format: owner/repo
+    GITHUB_API_BASE = os.getenv('GITHUB_API_BASE', 'https://api.github.com')
+
     # LLM Provider
     LLM_PROVIDER = os.getenv('LLM_PROVIDER', 'openrouter')
 
