@@ -52,6 +52,63 @@ def get_graph_incidents():
     """GET /api/graph/incidents"""
     try:
         graph = neo4j_client.get_all_incidents_cytoscape()
+        
+        # Fallback to postgres if Neo4j graph is empty
+        if not graph.get("nodes"):
+            logger.info("Neo4j graph empty, falling back to PostgreSQL incidents")
+            try:
+                pg_incidents = postgres.list_incidents(limit=100)
+                nodes = {}
+                edges = []
+                
+                for inc in pg_incidents:
+                    i_id = f"incident-{inc.get('trace_id') or inc.get('id')}"
+                    i_label = inc.get("classification") or inc.get("summary") or "Unknown Incident"
+                    
+                    if i_id not in nodes:
+                        nodes[i_id] = {
+                            "data": {
+                                "id": str(i_id),
+                                "label": str(i_label)[:30],
+                                "type": "incident",
+                                "severity": str(inc.get("blast_radius", "LOW")),
+                                "confidence": float(inc.get("confidence_score") or 0.0),
+                                "status": str(inc.get("status", "unknown")),
+                                "trace_id": str(inc.get("trace_id", "")),
+                                "root_cause": str(inc.get("root_cause", "")),
+                                "classification": str(inc.get("classification", ""))
+                            }
+                        }
+                    
+                    service_name = inc.get("service")
+                    if service_name:
+                        s_id = f"service-{service_name}"
+                        if s_id not in nodes:
+                            nodes[s_id] = {
+                                "data": {
+                                    "id": str(s_id),
+                                    "label": str(service_name),
+                                    "type": "service"
+                                }
+                            }
+                        
+                        edge_id = f"edge-pg-{i_id}-{s_id}"
+                        edges.append({
+                            "data": {
+                                "id": str(edge_id),
+                                "source": str(i_id),
+                                "target": str(s_id),
+                                "label": "ORIGINATED_IN"
+                            }
+                        })
+                
+                graph = {
+                    "nodes": list(nodes.values()),
+                    "edges": edges
+                }
+            except Exception as pg_exc:
+                logger.warning("PostgreSQL fallback failed: %s", pg_exc)
+                
         return jsonify(graph)
     except Exception as exc:
         logger.error("get_graph_incidents error: %s", exc)
