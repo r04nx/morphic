@@ -8,9 +8,11 @@ from datetime import datetime
 class MonitorChecker:
     """Background thread to check monitor URLs and update status"""
     
-    def __init__(self, monitor_manager, interval_seconds=30):
+    def __init__(self, monitor_manager, interval_seconds=30, tailer_registry=None, tailer_enabled=False):
         self.monitor_manager = monitor_manager
         self.interval_seconds = interval_seconds
+        self.tailer_registry = tailer_registry
+        self.tailer_enabled = tailer_enabled
         self.running = False
         self.thread = None
     
@@ -42,10 +44,22 @@ class MonitorChecker:
             return 100.0
     
     def check_all_monitors(self):
-        """Check all monitors and update their status"""
+        """Check all enabled monitors and update their status"""
         try:
             monitors = self.monitor_manager.list_monitors()
+
+            # Keep log tailers in sync even if frontend isn't polling /api/monitors
+            if self.tailer_enabled and self.tailer_registry:
+                try:
+                    self.tailer_registry.sync_monitors(monitors)
+                except Exception as e:
+                    print(f"Tailer sync error: {e}")
+
             for monitor in monitors:
+                # Skip disabled monitors
+                if not monitor.get('enabled', True):
+                    continue
+                    
                 monitor_id = monitor['id']
                 url = monitor.get('url')
 

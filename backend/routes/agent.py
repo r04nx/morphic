@@ -15,19 +15,22 @@ def register_agent_routes(app, agent_orchestrator):
             trace_id = data.get('trace_id')
             logs = data.get('logs', [])
             analysis = data.get('analysis', {})
+            github_owner = data.get('github_owner')
             github_repo = data.get('github_repo')
             github_token = data.get('github_token')
             github_branch = data.get('github_branch', 'main')
             
             # Get monitor details
             from models.monitor import MonitorManager
-            monitor_manager = MonitorManager(app.db_manager)
+            monitor_manager = MonitorManager(agent_orchestrator.db)
             monitor = monitor_manager.get_monitor(monitor_id)
             
             if not monitor:
                 return jsonify({"error": "Monitor not found"}), 404
             
             # Use monitor's GitHub settings if not provided
+            if not github_owner:
+                github_owner = monitor.get('github_owner')
             if not github_repo:
                 github_repo = monitor.get('github_repo')
             if not github_token:
@@ -41,7 +44,7 @@ def register_agent_routes(app, agent_orchestrator):
                 trace_id=trace_id or f"manual-{datetime.now().isoformat()}",
                 logs=logs,
                 analysis=analysis,
-                github_repo=github_repo,
+                github_repo=(f"{github_owner}/{github_repo}" if github_owner and github_repo else github_repo),
                 github_token=github_token,
                 github_branch=github_branch
             )
@@ -61,8 +64,8 @@ def register_agent_routes(app, agent_orchestrator):
         try:
             monitor_id = request.args.get('monitor_id')
             limit = request.args.get('limit', 50, type=int)
-            
-            with app.db_manager.postgres_conn.cursor(cursor_factory=RealDictCursor) as cursor:
+
+            with agent_orchestrator.db.postgres_conn.cursor(cursor_factory=RealDictCursor) as cursor:
                 query = """
                 SELECT id, monitor_id, trace_id, status, triggered_at, completed_at, 
                        github_repo, github_pr_url, github_pr_number, rca_summary, error_message
@@ -93,7 +96,7 @@ def register_agent_routes(app, agent_orchestrator):
     def get_agent_run(run_id):
         """Get a specific agent run"""
         try:
-            with app.db_manager.postgres_conn.cursor(cursor_factory=RealDictCursor) as cursor:
+            with agent_orchestrator.db.postgres_conn.cursor(cursor_factory=RealDictCursor) as cursor:
                 cursor.execute("""
                 SELECT id, monitor_id, trace_id, status, triggered_at, completed_at, 
                        github_repo, github_pr_url, github_pr_number, rca_summary, error_message
@@ -119,8 +122,8 @@ def register_agent_routes(app, agent_orchestrator):
         """List agent runs for a specific monitor"""
         try:
             limit = request.args.get('limit', 10, type=int)
-            
-            with app.db_manager.postgres_conn.cursor(cursor_factory=RealDictCursor) as cursor:
+
+            with agent_orchestrator.db.postgres_conn.cursor(cursor_factory=RealDictCursor) as cursor:
                 cursor.execute("""
                 SELECT id, monitor_id, trace_id, status, triggered_at, completed_at, 
                        github_repo, github_pr_url, github_pr_number, rca_summary, error_message

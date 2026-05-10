@@ -1,11 +1,20 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Plus, RefreshCw, Activity, Search, Terminal, Globe, Info } from "lucide-react";
+import {
+  Plus,
+  RefreshCw,
+  Activity,
+  Search,
+  Terminal,
+  Globe,
+  Info,
+  Check,
+  ChevronsUpDown,
+} from "lucide-react";
 import { api } from "@/api/client";
 import { AppShell } from "@/components/morphic/AppShell";
 import { MonitorCard } from "@/components/morphic/MonitorCard";
 import { EmptyState, ErrorState, SkeletonCard } from "@/components/morphic/states";
-import { useState, useMemo } from "react";
 import { cn } from "@/lib/utils";
 import {
   Dialog,
@@ -26,7 +35,21 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import {
+  Command,
+  CommandEmpty,
+  CommandGroup,
+  CommandInput,
+  CommandItem,
+  CommandList,
+} from "@/components/ui/command";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
 import { toast } from "sonner";
+import { useState, useMemo, useEffect, useCallback } from "react";
 
 export const Route = createFileRoute("/monitors/")({
   head: () => ({
@@ -83,8 +106,8 @@ function MonitorsPage() {
     <AppShell>
       <div className="mb-6 flex flex-wrap items-end justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-semibold tracking-tight text-gradient">System Monitors</h1>
-          <p className="mt-1 text-sm text-muted-foreground">
+          <h1 className="text-2xl font-bold tracking-tight text-foreground dark:text-white">System Monitors</h1>
+          <p className="mt-1 text-sm text-muted-foreground dark:text-zinc-400">
             {stats.up} of {stats.total} services are healthy · Avg latency {stats.avgLatency}ms
           </p>
         </div>
@@ -119,13 +142,13 @@ function MonitorsPage() {
         </div>
       </div>
 
-      <div className="mb-6 flex items-center gap-2 rounded-xl border border-border bg-card/40 p-3">
+      <div className="mb-6 flex items-center gap-2 rounded-xl border border-border bg-card/40 p-3 shadow-sm">
         <Search className="h-4 w-4 text-muted-foreground ml-1" />
         <input
           value={search}
           onChange={(e) => setSearch(e.target.value)}
           placeholder="Filter monitors by name or URL..."
-          className="h-9 flex-1 bg-transparent px-2 text-sm focus:outline-none"
+          className="h-9 flex-1 bg-transparent px-2 text-sm focus:outline-none text-foreground dark:text-zinc-100 placeholder:text-muted-foreground/60"
         />
       </div>
 
@@ -187,7 +210,49 @@ function CreateMonitorForm({ onSuccess }: { onSuccess: () => void }) {
   const [githubRepo, setGithubRepo] = useState("");
   const [githubToken, setGithubToken] = useState("");
   const [githubBranch, setGithubBranch] = useState("main");
+  const [repos, setRepos] = useState<any[]>([]);
+  const [branches, setBranches] = useState<any[]>([]);
+  const [isRepoOpen, setIsRepoOpen] = useState(false);
+  const [isFetchingRepos, setIsFetchingRepos] = useState(false);
+  const [isFetchingBranches, setIsFetchingBranches] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
+
+  const loadRepos = useCallback(async () => {
+    if (!githubToken) return;
+    setIsFetchingRepos(true);
+    try {
+      const res = await api.getGitHubRepos(githubToken);
+      setRepos(res.repos);
+      toast.success(`Loaded ${res.repos.length} repositories`);
+    } catch (err: any) {
+      toast.error(`Failed to load repos: ${err.message}`);
+    } finally {
+      setIsFetchingRepos(false);
+    }
+  }, [githubToken]);
+
+  const loadBranches = useCallback(async (repoName: string) => {
+    if (!githubToken || !repoName) return;
+    setIsFetchingBranches(true);
+    try {
+      const res = await api.getGitHubBranches(githubToken, repoName);
+      setBranches(res.branches);
+    } catch (err: any) {
+      toast.error(`Failed to load branches: ${err.message}`);
+    } finally {
+      setIsFetchingBranches(false);
+    }
+  }, [githubToken]);
+
+  // Auto-fetch repos when token is entered
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      if (githubToken && githubToken.length >= 35 && repos.length === 0 && !isFetchingRepos) {
+        loadRepos();
+      }
+    }, 800);
+    return () => clearTimeout(timer);
+  }, [githubToken, repos.length, isFetchingRepos, loadRepos]);
 
   const [healthTest, setHealthTest] = useState<{
     status?: number;
@@ -207,12 +272,20 @@ function CreateMonitorForm({ onSuccess }: { onSuccess: () => void }) {
 
     setIsLoading(true);
     try {
+      // Split owner/repo
+      let owner = "";
+      let repo = githubRepo;
+      if (githubRepo.includes("/")) {
+        [owner, repo] = githubRepo.split("/");
+      }
+
       await api.createMonitor({
         name,
         url,
         logs_url: logsUrl,
         auth_type: authType,
-        github_repo: githubRepo || undefined,
+        github_repo: repo || undefined,
+        github_owner: owner || undefined,
         github_token: githubToken || undefined,
         github_branch: githubBranch || "main",
         log_tail_enabled: !!logsUrl,
@@ -250,14 +323,9 @@ function CreateMonitorForm({ onSuccess }: { onSuccess: () => void }) {
       
       const endTime = performance.now();
       
-      if (!res.success) {
-        throw new Error(res.message || `Connection failed (HTTP ${res.status || 'Error'})`);
-      }
-
       let tailContent = "";
-      if (type === "logs" && res.tail) {
+      if (res.success && type === "logs" && res.tail) {
         const data = res.tail;
-        
         if (Array.isArray(data)) {
           tailContent = data.slice(-10).map(l => {
             const levelColor = l.level === "ERROR" ? "\x1b[31m" : l.level === "WARN" ? "\x1b[33m" : "\x1b[32m";
@@ -272,12 +340,16 @@ function CreateMonitorForm({ onSuccess }: { onSuccess: () => void }) {
 
       setter({
         testing: false,
-        success: true,
-        status: res.status || 200,
+        success: res.success,
+        status: res.status || (res.success ? 200 : 0),
         tail: tailContent
       });
       
-      toast.success(`${type === "health" ? "Healthcheck" : "Logs"} verified in ${Math.round(endTime - startTime)}ms`);
+      if (res.success) {
+        toast.success(`${type === "health" ? "Healthcheck" : "Logs"} verified in ${Math.round(endTime - startTime)}ms`);
+      } else {
+        toast.error(`Verification failed: ${res.message || `HTTP ${res.status}`}`);
+      }
     } catch (err: any) {
       console.error(err);
       setter({ testing: false, success: false, status: 0 });
@@ -506,41 +578,115 @@ function CreateMonitorForm({ onSuccess }: { onSuccess: () => void }) {
             <span className="ml-auto text-[10px] text-primary/70 font-medium bg-primary/10 px-2 py-0.5 rounded-full">AI Agent</span>
           </div>
           <p className="text-[11px] text-muted-foreground leading-relaxed">
-            On anomaly detection, Claude Code will clone this repo, perform RCA, and open a PR with an automated fix.
+            Configure automated RCA and remediation by connecting your repository.
           </p>
-          <div className="space-y-2">
+          <div className="space-y-4 pt-1">
             <div className="space-y-1.5">
-              <Label htmlFor="github-repo" className="text-xs text-muted-foreground">Repository (owner/repo)</Label>
-              <Input
-                id="github-repo"
-                value={githubRepo}
-                onChange={(e) => setGithubRepo(e.target.value)}
-                placeholder="acme-corp/payment-service"
-                className="bg-secondary/20 border-border/50 focus:border-primary/50 h-9 text-xs font-mono"
-              />
-            </div>
-            <div className="grid grid-cols-2 gap-2">
-              <div className="space-y-1.5">
-                <Label htmlFor="github-branch" className="text-xs text-muted-foreground">Target Branch</Label>
-                <Input
-                  id="github-branch"
-                  value={githubBranch}
-                  onChange={(e) => setGithubBranch(e.target.value)}
-                  placeholder="main"
-                  className="bg-secondary/20 border-border/50 h-9 text-xs font-mono"
-                />
-              </div>
-              <div className="space-y-1.5">
-                <Label htmlFor="github-token" className="text-xs text-muted-foreground">PAT Token (optional)</Label>
+              <Label htmlFor="github-token" className="text-xs text-muted-foreground">Personal Access Token (PAT)</Label>
+              <div className="relative">
                 <Input
                   id="github-token"
                   type="password"
                   value={githubToken}
                   onChange={(e) => setGithubToken(e.target.value)}
                   placeholder="ghp_..."
-                  className="bg-secondary/20 border-border/50 h-9 text-xs font-mono"
+                  className="bg-secondary/20 border-border/50 h-9 text-xs font-mono pr-8"
                 />
+                {isFetchingRepos && (
+                  <div className="absolute right-2.5 top-2.5">
+                    <RefreshCw className="h-4 w-4 animate-spin text-primary/50" />
+                  </div>
+                )}
               </div>
+            </div>
+
+            <div className="space-y-1.5">
+              <Label htmlFor="github-repo" className="text-xs text-muted-foreground">Repository</Label>
+              <Popover open={isRepoOpen} onOpenChange={setIsRepoOpen}>
+                <PopoverTrigger asChild>
+                  <button
+                    disabled={repos.length === 0}
+                    className={cn(
+                      "flex h-9 w-full items-center justify-between rounded-md border border-border/50 bg-secondary/20 px-3 text-xs font-mono transition-all hover:bg-secondary/30 disabled:opacity-50",
+                      !githubRepo && "text-muted-foreground"
+                    )}
+                  >
+                    {githubRepo || (repos.length === 0 ? "Enter token to load repos..." : "Search repositories...")}
+                    <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+                  </button>
+                </PopoverTrigger>
+                <PopoverContent className="w-[var(--radix-popover-trigger-width)] p-0 glass" align="start">
+                  <Command>
+                    <CommandInput placeholder="Search repositories..." className="h-9 text-xs" />
+                    <CommandList className="max-h-[250px] scrollbar-thin scrollbar-thumb-white/10">
+                      <CommandEmpty className="py-6 text-center text-xs text-muted-foreground">No repository found.</CommandEmpty>
+                      <CommandGroup>
+                        {repos.map((r) => (
+                          <CommandItem
+                            key={r.full_name}
+                            value={r.full_name}
+                            onSelect={(currentValue) => {
+                              setGithubRepo(currentValue === githubRepo ? "" : currentValue);
+                              loadBranches(currentValue);
+                              setIsRepoOpen(false);
+                            }}
+                            className="text-xs flex items-center justify-between"
+                          >
+                            <div className="flex items-center gap-2 overflow-hidden">
+                              <Check
+                                className={cn(
+                                  "h-3.5 w-3.5 shrink-0",
+                                  githubRepo === r.full_name ? "opacity-100" : "opacity-0"
+                                )}
+                              />
+                              <span className="truncate">{r.full_name}</span>
+                            </div>
+                            {r.description && (
+                              <TooltipProvider>
+                                <Tooltip>
+                                  <TooltipTrigger asChild>
+                                    <Info className="h-3 w-3 opacity-30 shrink-0 ml-2" />
+                                  </TooltipTrigger>
+                                  <TooltipContent side="right" className="max-w-[200px]">
+                                    <p className="text-[10px]">{r.description}</p>
+                                  </TooltipContent>
+                                </Tooltip>
+                              </TooltipProvider>
+                            )}
+                          </CommandItem>
+                        ))}
+                      </CommandGroup>
+                    </CommandList>
+                  </Command>
+                </PopoverContent>
+              </Popover>
+            </div>
+
+            <div className="space-y-1.5">
+              <Label htmlFor="github-branch" className="text-xs text-muted-foreground">Target Branch</Label>
+              <Select 
+                disabled={branches.length === 0} 
+                value={githubBranch} 
+                onValueChange={setGithubBranch}
+              >
+                <SelectTrigger className="bg-secondary/20 border-border/50 h-9 text-xs font-mono">
+                  {isFetchingBranches ? (
+                    <div className="flex items-center gap-2">
+                      <RefreshCw className="h-3 w-3 animate-spin" />
+                      <span className="opacity-50">Loading branches...</span>
+                    </div>
+                  ) : (
+                    <SelectValue placeholder={branches.length === 0 ? "Select repository first..." : "Select branch"} />
+                  )}
+                </SelectTrigger>
+                <SelectContent className="glass">
+                  {branches.map(b => (
+                    <SelectItem key={b.name} value={b.name} className="text-xs font-mono">
+                      {b.name} {b.protected ? "🔒" : ""}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </div>
           </div>
         </div>

@@ -94,6 +94,44 @@ def register_monitor_routes(app, monitor_manager, tailer_registry=None, tailer_e
         except Exception as e:
             return jsonify({"error": str(e)}), 500
 
+    @app.route('/api/monitors/<monitor_id>/enable', methods=['POST'])
+    def enable_monitor_api(monitor_id):
+        """Enable a monitor"""
+        try:
+            monitor = monitor_manager.enable_monitor(monitor_id)
+            if not monitor:
+                return jsonify({"error": "Monitor not found"}), 404
+            
+            # Re-sync tailers after enabling
+            if tailer_enabled and tailer_registry:
+                tailer_registry.sync_monitors(monitor_manager.list_monitors())
+            
+            return jsonify({
+                "monitor": monitor,
+                "message": "Monitor enabled successfully"
+            })
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+
+    @app.route('/api/monitors/<monitor_id>/disable', methods=['POST'])
+    def disable_monitor_api(monitor_id):
+        """Disable a monitor"""
+        try:
+            monitor = monitor_manager.disable_monitor(monitor_id)
+            if not monitor:
+                return jsonify({"error": "Monitor not found"}), 404
+            
+            # Re-sync tailers after disabling
+            if tailer_enabled and tailer_registry:
+                tailer_registry.sync_monitors(monitor_manager.list_monitors())
+            
+            return jsonify({
+                "monitor": monitor,
+                "message": "Monitor disabled successfully"
+            })
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+
     @app.route('/api/monitors/test', methods=['POST'])
     def test_monitor():
         """Proxy for testing monitor connections to bypass CORS"""
@@ -109,7 +147,7 @@ def register_monitor_routes(app, monitor_manager, tailer_registry=None, tailer_e
             if not target_url:
                 return jsonify({"error": "URL is required"}), 400
                 
-            headers = {"Accept": "application/json"}
+            headers = {"Accept": "application/json, text/plain, */*"}
             if auth_type == 'BEARER' and bearer_token:
                 headers["Authorization"] = f"Bearer {bearer_token}"
             elif auth_type == 'BASIC' and username and password:
@@ -118,6 +156,10 @@ def register_monitor_routes(app, monitor_manager, tailer_registry=None, tailer_e
                 headers["Authorization"] = f"Basic {encoded_auth}"
                 
             try:
+                import logging
+                logger = logging.getLogger("morphic.monitors")
+                logger.info(f"Testing {test_type} connection to: {target_url}")
+                
                 response = requests.get(target_url, headers=headers, timeout=10)
                 
                 result = {
@@ -142,5 +184,14 @@ def register_monitor_routes(app, monitor_manager, tailer_registry=None, tailer_e
                     "message": str(e)
                 })
                 
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+
+    @app.route('/api/monitors/<monitor_id>/analysis', methods=['GET'])
+    def monitor_analysis_api(monitor_id):
+        """Get latest LogAI analysis for a monitor"""
+        try:
+            analysis = monitor_manager.get_latest_analysis(monitor_id)
+            return jsonify(analysis or {})
         except Exception as e:
             return jsonify({"error": str(e)}), 500

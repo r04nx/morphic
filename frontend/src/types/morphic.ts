@@ -123,10 +123,12 @@ export type Monitor = {
   history: { status: MonitorStatus; timestamp: string }[];
   logs_url?: string;
   // GitHub self-healing integration
+  github_owner?: string;       // e.g. "owner" for github.com/owner/repo
   github_repo?: string;        // e.g. "owner/repo" or full HTTPS URL
   github_token?: string;       // personal access token
   github_branch?: string;      // target branch, default "main"
   log_tail_enabled?: boolean;
+  enabled?: boolean;          // Whether the monitor is enabled for checking
   agent_run_status?: "IDLE" | "TRIGGERED" | "PR_CREATED" | "ANALYZED" | "FAILED";
   last_anomaly_at?: string;
 };
@@ -149,6 +151,7 @@ export type AgentRun = {
   github_repo?: string;
   github_pr_url?: string;
   github_pr_number?: number;
+  claude_output?: string;
   anomalies?: {
     score: number;
     error_rate: number;

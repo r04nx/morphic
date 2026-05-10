@@ -9,15 +9,23 @@ CREATE EXTENSION IF NOT EXISTS "pg_trgm";
 CREATE TABLE IF NOT EXISTS incidents (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     trace_id VARCHAR(255) NOT NULL UNIQUE,
-    timestamp TIMESTAMP WITH TIME ZONE NOT NULL,
+    title VARCHAR(255),
+    description TEXT,
+    severity VARCHAR(20) CHECK (severity IN ('LOW', 'MEDIUM', 'HIGH', 'CRITICAL')),
+    status VARCHAR(20) DEFAULT 'OPEN' CHECK (status IN ('OPEN', 'IN_PROGRESS', 'RESOLVED', 'FAILED', 'INVESTIGATING')),
+    error_type VARCHAR(100),
+    service VARCHAR(100),
+    rca_json JSONB,
+    metadata JSONB,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    -- Legacy columns for compatibility
+    timestamp TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
     classification VARCHAR(100),
     root_cause TEXT,
-    blast_radius VARCHAR(20) CHECK (blast_radius IN ('LOW', 'MEDIUM', 'HIGH', 'CRITICAL')),
+    blast_radius VARCHAR(20),
     impact TEXT,
-    confidence_score DECIMAL(3,2) CHECK (confidence_score >= 0 AND confidence_score <= 1),
-    status VARCHAR(20) DEFAULT 'active' CHECK (status IN ('active', 'resolved', 'investigating')),
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+    confidence_score DECIMAL(3,2)
 );
 
 -- Create incident_logs table for log timeline
@@ -58,10 +66,13 @@ CREATE TABLE IF NOT EXISTS monitors (
     last_check TIMESTAMP WITH TIME ZONE,
     notifications JSONB DEFAULT '[]'::jsonb,
     workflows JSONB DEFAULT '[]'::jsonb,
+    -- Per-monitor GitHub settings
     github_repo TEXT,
     github_token TEXT,
+    github_owner VARCHAR(255),
     github_branch VARCHAR(255) DEFAULT 'main',
     log_tail_enabled BOOLEAN DEFAULT true,
+    enabled BOOLEAN DEFAULT true,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
     last_anomaly_at TIMESTAMP WITH TIME ZONE,
     agent_run_status VARCHAR(50)

@@ -6,6 +6,7 @@ import { isMockMode } from "@/api/client";
 import { cn } from "@/lib/utils";
 import { ThemeToggle } from "./ThemeToggle";
 import { useTheme } from "./theme";
+import { Breadcrumbs } from "./Breadcrumbs";
 
 const NAV = [
   { to: "/incidents", label: "Incidents", icon: Activity },
@@ -22,7 +23,14 @@ export function AppShell({ children }: { children: ReactNode }) {
       <div className="flex min-w-0 flex-1 flex-col">
         <TopBar />
         <main className="flex-1 overflow-x-hidden">
-          <div className="mx-auto w-full max-w-[1400px] px-6 py-6">{children}</div>
+          <div className="mx-auto w-full max-w-[1400px] px-6 pt-6">
+            <div className="mb-4">
+              <Breadcrumbs />
+            </div>
+            <div className="pb-6">
+              {children}
+            </div>
+          </div>
         </main>
       </div>
     </div>

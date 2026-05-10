@@ -2,9 +2,11 @@ import type {
   ActionExecution,
   Incident,
   Monitor,
+  MonitorStatus,
   RCA,
   SettingsStatus,
   TraceEvent,
+  IntegrationSettings,
 } from "@/types/morphic";
 
 const SERVICES = ["payments-svc", "checkout-svc", "auth-svc", "ledger-svc", "notify-svc"];
@@ -357,6 +359,7 @@ export const mockMonitors: Monitor[] = [
     uptime_pct: 99.98,
     latency_ms: 142,
     last_check: new Date(now - 1000 * 30).toISOString(),
+    enabled: true,
     notifications: [
       { type: "SLACK", destination: "#alerts-prod", enabled: true },
       { type: "EMAIL", destination: "sre@morphic.dev", enabled: true },
@@ -381,6 +384,7 @@ export const mockMonitors: Monitor[] = [
     uptime_pct: 98.5,
     latency_ms: 850,
     last_check: new Date(now - 1000 * 45).toISOString(),
+    enabled: true,
     notifications: [
       { type: "TELEGRAM", destination: "@morphic_ops", enabled: true },
       { type: "NTFY", destination: "https://ntfy.sh/morphic_critical", enabled: true },

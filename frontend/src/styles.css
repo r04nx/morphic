@@ -122,7 +122,7 @@
   color-scheme: dark;
 
   --background: oklch(0.18 0.018 260); /* #0D1117 */
-  --foreground: oklch(0.93 0.012 250); /* #E6EDF3 */
+  --foreground: oklch(0.98 0.01 250); /* Ultra bright text */
 
   --card: oklch(0.21 0.018 260); /* #161B22 */
   --card-foreground: oklch(0.93 0.012 250);
@@ -137,7 +137,7 @@
   --secondary-foreground: oklch(0.93 0.012 250);
 
   --muted: oklch(0.24 0.018 260);
-  --muted-foreground: oklch(0.66 0.018 255); /* #9DA7B3 */
+  --muted-foreground: oklch(0.8 0.01 255); /* Brighter muted text for better legibility */
 
   --accent: oklch(0.27 0.022 260);
   --accent-foreground: oklch(0.93 0.012 250);

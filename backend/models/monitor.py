@@ -33,12 +33,20 @@ class MonitorManager:
         try:
             with self.db.postgres_conn.cursor(cursor_factory=RealDictCursor) as cursor:
                 monitor_id = data.get('id', 'mon_' + str(uuid.uuid4())[:8])
+
+                github_owner = data.get('github_owner')
+                github_repo = data.get('github_repo')
+                if not github_owner and isinstance(github_repo, str) and "/" in github_repo:
+                    owner_part, repo_part = github_repo.split("/", 1)
+                    github_owner = owner_part.strip() or None
+                    github_repo = repo_part.strip() or None
+
                 query = """
                 INSERT INTO monitors 
                 (id, name, url, logs_url, auth_type, status, uptime_pct, latency_ms,
                  last_check, notifications, workflows,
-                 github_repo, github_token, github_branch, log_tail_enabled)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                 github_repo, github_token, github_owner, github_branch, log_tail_enabled, enabled)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 RETURNING *
                 """
                 cursor.execute(query, (
@@ -53,10 +61,12 @@ class MonitorManager:
                     datetime.utcnow(),
                     json.dumps(data.get('notifications', [])),
                     json.dumps(data.get('workflows', [])),
-                    data.get('github_repo'),
+                    github_repo,
                     data.get('github_token'),
+                    github_owner,
                     data.get('github_branch', 'main'),
                     data.get('log_tail_enabled', True),
+                    data.get('enabled', True),
                 ))
                 monitor = cursor.fetchone()
                 self.db.postgres_conn.commit()
@@ -137,11 +147,21 @@ class MonitorManager:
             with self.db.postgres_conn.cursor(cursor_factory=RealDictCursor) as cursor:
                 fields = []
                 values = []
+
+                if 'github_repo' in data or 'github_owner' in data:
+                    github_owner = data.get('github_owner')
+                    github_repo = data.get('github_repo')
+                    if not github_owner and isinstance(github_repo, str) and "/" in github_repo:
+                        owner_part, repo_part = github_repo.split("/", 1)
+                        github_owner = owner_part.strip() or None
+                        github_repo = repo_part.strip() or None
+                        data['github_owner'] = github_owner
+                        data['github_repo'] = github_repo
                 
                 updatable_fields = [
                     'name', 'url', 'logs_url', 'auth_type', 'status',
-                    'uptime_pct', 'latency_ms', 'github_repo', 'github_token',
-                    'github_branch', 'log_tail_enabled', 'agent_run_status',
+                    'uptime_pct', 'latency_ms', 'github_repo', 'github_token', 'github_owner',
+                    'github_branch', 'log_tail_enabled', 'agent_run_status', 'enabled',
                 ]
                 for field in updatable_fields:
                     if field in data:
@@ -251,6 +271,59 @@ class MonitorManager:
             print(f"Failed to get monitor metrics: {e}")
             return []
 
+    def get_latest_analysis(self, monitor_id):
+        """Get the most recent LogAI analysis for a monitor"""
+        try:
+            from psycopg2.extras import RealDictCursor
+            with self.db.postgres_conn.cursor(cursor_factory=RealDictCursor) as cursor:
+                cursor.execute(
+                    """SELECT composite_score, error_rate, semantic_score, iso_score, ts_score, top_patterns, anomaly_detected, analyzed_at, signals
+                       FROM monitor_analysis 
+                       WHERE monitor_id = %s 
+                       ORDER BY analyzed_at DESC 
+                       LIMIT 1""",
+                    (monitor_id,)
+                )
+                row = cursor.fetchone()
+                if row:
+                    if isinstance(row['analyzed_at'], datetime):
+                        row['analyzed_at'] = row['analyzed_at'].isoformat()
+                    return row
+                return None
+        except Exception as e:
+            print(f"Failed to get latest analysis: {e}")
+            return None
+
+    def get_analysis_history(self, monitor_id, limit=20):
+        """Get recent LogAI analysis history for a monitor"""
+        try:
+            from psycopg2.extras import RealDictCursor
+            with self.db.postgres_conn.cursor(cursor_factory=RealDictCursor) as cursor:
+                cursor.execute(
+                    """SELECT composite_score, error_rate, semantic_score, iso_score, ts_score, analyzed_at
+                       FROM monitor_analysis 
+                       WHERE monitor_id = %s 
+                       ORDER BY analyzed_at DESC 
+                       LIMIT %s""",
+                    (monitor_id, limit)
+                )
+                history = cursor.fetchall()
+                for h in history:
+                    if isinstance(h['analyzed_at'], datetime):
+                        h['analyzed_at'] = h['analyzed_at'].isoformat()
+                return history[::-1] # Return in chronological order
+        except Exception as e:
+            print(f"Failed to get analysis history: {e}")
+            return []
+
+    def enable_monitor(self, monitor_id):
+        """Enable a monitor"""
+        return self.update_monitor(monitor_id, {'enabled': True})
+    
+    def disable_monitor(self, monitor_id):
+        """Disable a monitor"""
+        return self.update_monitor(monitor_id, {'enabled': False})
+    
     def delete_monitor(self, monitor_id):
         """Delete a monitor"""
         try:

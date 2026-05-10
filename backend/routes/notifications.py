@@ -1,6 +1,7 @@
 """Notification routes for Morphic backend"""
 from flask import jsonify, request
 from services.notifications import NotificationManager
+import os
 
 
 def register_notification_routes(app, monitor_manager):
@@ -49,6 +50,85 @@ def register_notification_routes(app, monitor_manager):
         except Exception as e:
             return jsonify({"error": str(e)}), 500
     
+    @app.route('/api/notifications/telegram/send-code', methods=['POST'])
+    def send_telegram_verification_code():
+        """Send verification code to Telegram user"""
+        try:
+            data = request.get_json()
+            username = data.get('username')
+            bot_token = os.getenv('TELEGRAM_BOT_TOKEN')
+            bot_username = os.getenv('TELEGRAM_BOT_USERNAME', '').lstrip('@')
+            
+            if not username:
+                return jsonify({"error": "username is required"}), 400
+
+            if not bot_token or not bot_username:
+                return jsonify({"error": "Telegram bot is not configured"}), 500
+            
+            # Create Telegram service instance
+            config = {'destination': username}
+            service = notification_manager.create_service('TELEGRAM', config)
+            
+            # Generate and send verification code
+            code = service.generate_verification_code()
+            success = service.send_verification_code(username)
+            
+            if success:
+                return jsonify({
+                    "success": True,
+                    "bot_username": bot_username,
+                    "verification_code": code,
+                    "message": f"Send this code to your Telegram bot: {code}"
+                })
+            else:
+                return jsonify({
+                    "success": False,
+                    "error": "Failed to send verification code"
+                }), 500
+                
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+
+    @app.route('/api/notifications/telegram/verify', methods=['POST'])
+    def verify_telegram_chat_id():
+        """Verify Telegram chat ID with code"""
+        try:
+            data = request.get_json()
+            print(f"[DEBUG] Telegram verify request data: {data}")
+            username = data.get('username')
+            code = data.get('code')
+            bot_token = os.getenv('TELEGRAM_BOT_TOKEN')
+            print(f"[DEBUG] Parsed - username: {username}, code: {code}")
+
+            if not username or not code:
+                print(f"[DEBUG] Missing required fields - username: {username}, code: {code}")
+                return jsonify({"error": "username and code are required"}), 400
+
+            if not bot_token:
+                return jsonify({"error": "Telegram bot is not configured"}), 500
+            
+            # Create Telegram service instance
+            config = {'destination': username}
+            service = notification_manager.create_service('TELEGRAM', config)
+            
+            # Verify the code
+            success = service.verify_chat_id(username, code)
+            
+            if success:
+                return jsonify({
+                    "success": True,
+                    "message": "Telegram verification successful",
+                    "chat_id": service.verified_chat_id
+                })
+            else:
+                return jsonify({
+                    "success": False,
+                    "error": "Invalid verification code"
+                }), 400
+                
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+
     @app.route('/api/notifications/send', methods=['POST'])
     def send_notification():
         """Send notification to configured channels"""

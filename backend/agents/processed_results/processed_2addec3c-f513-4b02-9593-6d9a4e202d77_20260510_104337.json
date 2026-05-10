@@ -1,0 +1,45 @@
+{
+  "task_id": "2addec3c-f513-4b02-9593-6d9a4e202d77",
+  "success": false,
+  "summary": "Task failed: Task execution failed: Claude Code returned an error result: success",
+  "severity": "HIGH",
+  "category": "security",
+  "insights": [
+    "Low confidence score - results may need manual review"
+  ],
+  "recommendations": [
+    "Manual review recommended due to low confidence",
+    "Consider providing more context or data"
+  ],
+  "artifacts": {
+    "session_files": []
+  },
+  "execution_time": 2.636015,
+  "confidence_score": 0.0,
+  "created_at": "2026-05-10T10:43:37.420652",
+  "original_data": {
+    "task": "Analyze the codebase for performance bottlenecks and optimization opportunities",
+    "start_time": "2026-05-10T10:43:34.785847",
+    "messages": [
+      {
+        "type": "unknown",
+        "content": "SystemMessage(subtype='init', data={'type': 'system', 'subtype': 'init', 'cwd': '/home/rohan/Public/morphic', 'session_id': 'b7e61cb7-d9c6-48cd-822c-2527408b3ac5', 'tools': ['Task', 'AskUserQuestion', 'Bash', 'CronCreate', 'CronDelete', 'CronList', 'Edit', 'EnterPlanMode', 'EnterWorktree', 'ExitPlanMode', 'ExitWorktree', 'Glob', 'Grep', 'Monitor', 'NotebookEdit', 'PushNotification', 'Read', 'RemoteTrigger', 'ScheduleWakeup', 'Skill', 'TaskOutput', 'TaskStop', 'TodoWrite', 'ToolSearch', 'WebFetch', 'WebSearch', 'Write'], 'mcp_servers': [], 'model': 'claude-opus-4-7[1m]', 'permissionMode': 'acceptEdits', 'slash_commands': ['update-config', 'debug', 'simplify', 'batch', 'fewer-permission-prompts', 'loop', 'schedule', 'claude-api', 'clear', 'compact', 'context', 'heapdump', 'init', 'review', 'security-review', 'usage', 'insights', 'team-onboarding'], 'apiKeySource': 'ANTHROPIC_API_KEY', 'claude_code_version': '2.1.138', 'output_style': 'default', 'agents': ['Explore', 'general-purpose', 'Plan', 'statusline-setup'], 'skills': ['update-config', 'debug', 'simplify', 'batch', 'fewer-permission-prompts', 'loop', 'schedule', 'claude-api'], 'plugins': [], 'analytics_disabled': False, 'uuid': '3a82f0ce-bbce-4a1e-8cc4-1de4028c98ad', 'memory_paths': {'auto': '/home/rohan/.claude/projects/-home-rohan-Public-morphic/memory/'}, 'fast_mode_state': 'off'})",
+        "timestamp": "2026-05-10T10:43:36.064579"
+      },
+      {
+        "type": "unknown",
+        "content": "AssistantMessage(content=[TextBlock(text='API Error: Request rejected (429) \u00b7 This request would exceed the rate limit you configured in workspace HACKATHON-2 of 0 requests per minute. For details, refer to: https://docs.claude.com/en/api/rate-limits; see the response headers for current usage. Please reduce the prompt length or the maximum tokens requested, or try again later. You may also adjust your configured workspace rate limit in the settings page of the Anthropic Console.')], model='<synthetic>', parent_tool_use_id=None, error='rate_limit', usage={'input_tokens': 0, 'output_tokens': 0, 'cache_creation_input_tokens': 0, 'cache_read_input_tokens': 0, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': None, 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 0}, 'inference_geo': None, 'iterations': None, 'speed': None}, message_id='facb3384-d724-48f8-bc81-fc9fc0d5f6ac', stop_reason='stop_sequence', session_id='b7e61cb7-d9c6-48cd-822c-2527408b3ac5', uuid='72918e73-4aeb-4ae2-a8cc-bcf69324d5c9')",
+        "timestamp": "2026-05-10T10:43:36.554424"
+      },
+      {
+        "type": "unknown",
+        "content": "ResultMessage(subtype='success', duration_ms=650, duration_api_ms=0, is_error=True, num_turns=1, session_id='b7e61cb7-d9c6-48cd-822c-2527408b3ac5', stop_reason='stop_sequence', total_cost_usd=0, usage={'input_tokens': 0, 'cache_creation_input_tokens': 0, 'cache_read_input_tokens': 0, 'output_tokens': 0, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 0}, 'inference_geo': '', 'iterations': [], 'speed': 'standard'}, result='API Error: Request rejected (429) \u00b7 This request would exceed the rate limit you configured in workspace HACKATHON-2 of 0 requests per minute. For details, refer to: https://docs.claude.com/en/api/rate-limits; see the response headers for current usage. Please reduce the prompt length or the maximum tokens requested, or try again later. You may also adjust your configured workspace rate limit in the settings page of the Anthropic Console.', structured_output=None, model_usage={}, permission_denials=[], deferred_tool_use=None, errors=None, api_error_status=429, uuid='ac73ac98-6cb0-48dc-9553-32e52437cb20')",
+        "timestamp": "2026-05-10T10:43:36.556089"
+      }
+    ],
+    "tool_calls": [],
+    "success": false,
+    "error": "Task execution failed: Claude Code returned an error result: success",
+    "end_time": "2026-05-10T10:43:37.420546"
+  }
+}

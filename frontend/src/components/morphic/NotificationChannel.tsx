@@ -52,8 +52,7 @@ export function NotificationChannel({ type, name, domain, monitor, onSave }: Not
   };
 
   const getStatusColor = () => {
-    if (!isConfigured) return "bg-gray-100 text-gray-600";
-    return "bg-green-100 text-green-600";
+    return "bg-gray-100 text-gray-600";
   };
 
   return (
@@ -67,11 +66,6 @@ export function NotificationChannel({ type, name, domain, monitor, onSave }: Not
               <Badge variant="outline" className="text-xs">
                 {type}
               </Badge>
-              {isConfigured && (
-                <Badge variant="default" className="text-xs bg-green-100 text-green-800">
-                  Active
-                </Badge>
-              )}
             </div>
             <div className="text-sm text-muted-foreground">
               {isConfigured ? (

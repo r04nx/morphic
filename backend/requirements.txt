@@ -1,6 +1,12 @@
 # Core LogAI library
 logai==0.1.5
 
+# Claude Agent SDK for automated remediation
+claude-agent-sdk>=0.1.0
+
+# GitHub API for PR creation
+PyGithub>=2.0
+
 # Database connectivity
 psycopg2-binary==2.9.9
 neo4j==5.26.0

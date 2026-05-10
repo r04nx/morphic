@@ -1,9 +1,12 @@
 import { Link } from "@tanstack/react-router";
-import { Globe, Trash2 } from "lucide-react";
+import { Globe, Pause, Play, Trash2 } from "lucide-react";
 import type { Monitor } from "@/types/morphic";
 import { cn } from "@/lib/utils";
 import { format, formatDistanceToNow } from "date-fns";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { api } from "@/api/client";
+import { toast } from "sonner";
 
 // Safe date parser with fallback
 const safeDate = (dateStr: string | undefined | null): Date => {
@@ -13,6 +16,29 @@ const safeDate = (dateStr: string | undefined | null): Date => {
 };
 
 export function MonitorCard({ monitor, onDelete }: { monitor: Monitor; onDelete?: () => void }) {
+  const queryClient = useQueryClient();
+  
+  const enableMutation = useMutation({
+    mutationFn: () => api.enableMonitor(monitor.id),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["monitors"] });
+      queryClient.invalidateQueries({ queryKey: ["monitor", monitor.id] });
+      toast.success(`Monitor "${monitor.name}" enabled`);
+    },
+    onError: () => toast.error("Failed to enable monitor"),
+  });
+
+  const disableMutation = useMutation({
+    mutationFn: () => api.disableMonitor(monitor.id),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["monitors"] });
+      queryClient.invalidateQueries({ queryKey: ["monitor", monitor.id] });
+      toast.success(`Monitor "${monitor.name}" paused`);
+    },
+    onError: () => toast.error("Failed to pause monitor"),
+  });
+
+  const isPaused = monitor.enabled === false;
   const statusColor = {
     UP: "bg-success",
     DOWN: "bg-destructive",
@@ -27,24 +53,59 @@ export function MonitorCard({ monitor, onDelete }: { monitor: Monitor; onDelete?
 
   return (
     <div className="relative group">
-      {onDelete && (
+      <div className="absolute -top-1.5 -right-1.5 z-10 flex gap-1 opacity-0 transition-opacity group-hover:opacity-100">
         <button
           onClick={(e) => {
             e.preventDefault();
             e.stopPropagation();
-            if (confirm(`Delete monitor "${monitor.name}"?`)) {
-              onDelete();
+            if (isPaused) {
+              enableMutation.mutate();
+            } else {
+              disableMutation.mutate();
             }
           }}
-          className="absolute -top-2 -right-2 z-10 hidden h-7 w-7 items-center justify-center rounded-full border border-border bg-background text-destructive shadow-sm transition hover:bg-destructive/10 group-hover:flex"
+          disabled={enableMutation.isPending || disableMutation.isPending}
+          className={cn(
+            "h-6 w-6 items-center justify-center rounded-full border transition-all flex",
+            isPaused 
+              ? "border-emerald-500 bg-emerald-500 text-white hover:bg-emerald-600 hover:scale-110" 
+              : "border-amber-500 bg-amber-500 text-white hover:bg-amber-600 hover:scale-110"
+          )}
+          title={isPaused ? "Enable monitor" : "Pause monitor"}
         >
-          <Trash2 className="h-3.5 w-3.5" />
+          {enableMutation.isPending || disableMutation.isPending ? (
+            <div className="h-2.5 w-2.5 animate-spin rounded-full border-2 border-current border-t-transparent" />
+          ) : isPaused ? (
+            <Play className="h-3 w-3" strokeWidth={3} />
+          ) : (
+            <Pause className="h-3 w-3" strokeWidth={3} />
+          )}
         </button>
-      )}
+        {onDelete && (
+          <button
+            onClick={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              if (confirm(`Delete monitor "${monitor.name}"?`)) {
+                onDelete();
+              }
+            }}
+            className="h-6 w-6 items-center justify-center rounded-full border border-red-500 bg-red-500 text-white hover:bg-red-600 hover:scale-110 transition-all flex"
+            title="Delete monitor"
+          >
+            <Trash2 className="h-3 w-3" strokeWidth={2.5} />
+          </button>
+        )}
+      </div>
       <Link
         to="/monitors/$monitorId"
         params={{ monitorId: monitor.id }}
-        className="block rounded-xl border border-border bg-card p-4 transition hover:border-primary/40 hover:bg-card/80"
+        className={cn(
+          "block rounded-xl border p-4 transition",
+          isPaused 
+            ? "border-border/50 bg-card/50 opacity-60" 
+            : "border-border bg-card hover:border-primary/40 hover:bg-card/80"
+        )}
       >
       <div className="flex items-start justify-between mb-3">
         <div className="flex items-center gap-2">
@@ -52,6 +113,11 @@ export function MonitorCard({ monitor, onDelete }: { monitor: Monitor; onDelete?
           <span className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">
             {statusText}
           </span>
+          {isPaused && (
+            <span className="text-[9px] font-medium uppercase tracking-wider text-warning bg-warning/10 px-2 py-0.5 rounded">
+              Paused
+            </span>
+          )}
         </div>
         <span className="font-mono text-[10px] text-muted-foreground">
           {formatDistanceToNow(safeDate(monitor.last_check), { addSuffix: true })}
@@ -59,7 +125,7 @@ export function MonitorCard({ monitor, onDelete }: { monitor: Monitor; onDelete?
       </div>
 
       <div className="mb-4">
-        <h3 className="text-base font-medium leading-snug truncate group-hover:text-primary transition-colors">
+        <h3 className="text-base font-medium leading-snug truncate group-hover:text-primary transition-colors text-foreground dark:text-zinc-100">
           {monitor.name}
         </h3>
         <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground font-mono truncate opacity-70">

@@ -1,5 +1,6 @@
 """Incident routes for Morphic backend"""
 from datetime import datetime
+import json
 from flask import jsonify, request
 
 # Valid status values the frontend understands
@@ -22,25 +23,20 @@ _STATUS_MAP = {
 
 _VALID_BLAST = {"LOW", "MEDIUM", "HIGH", "CRITICAL"}
 
-
 def _normalize_incident(raw: dict) -> dict:
     """
-    Coerce a raw PostgreSQL row dict into the shape the frontend expects:
-      - blast_radius  : one of LOW/MEDIUM/HIGH/CRITICAL  (never null)
-      - confidence_score : float 0–1                     (never null/NaN)
-      - status        : one of the 7 valid frontend values
-      - summary       : short human-readable string
+    Coerce a raw PostgreSQL row dict into the shape the frontend expects.
     """
     inc = dict(raw)
 
-    # ── blast_radius: pass through exactly as stored ─────────────────
+    # blast_radius
     br = inc.get("blast_radius")
     if br and str(br).upper().strip() in _VALID_BLAST:
         inc["blast_radius"] = str(br).upper().strip()
     else:
         inc["blast_radius"] = "MEDIUM"
 
-    # ── confidence_score: pass through as float ───────────────────────
+    # confidence_score
     raw_score = inc.get("confidence_score")
     try:
         score = float(raw_score)
@@ -51,21 +47,20 @@ def _normalize_incident(raw: dict) -> dict:
         score = 0.0
     inc["confidence_score"] = round(score, 4)
 
-    # ── status: map DB values to frontend enum ────────────────────────
+    # status
     raw_status = str(inc.get("status") or "active").strip()
     inc["status"] = (
         raw_status if raw_status in _VALID_STATUSES
         else _STATUS_MAP.get(raw_status.lower(), "RCA_READY")
     )
 
-    # ── summary: classification only, no template ─────────────────────
-    # Priority: stored summary > classification > trace_id
+    # summary
     stored_summary = (inc.get("summary") or "").strip()
     classification  = (inc.get("classification") or "").strip()
     trace_id        = (inc.get("trace_id") or "").strip()
     inc["summary"] = stored_summary or classification or trace_id or "Incident"
 
-    # ── datetime serialisation ────────────────────────────────────────
+    # datetime serialization
     for field in ("timestamp", "created_at", "updated_at"):
         val = inc.get(field)
         if isinstance(val, datetime):
@@ -79,24 +74,20 @@ def register_incident_routes(app, incident_manager):
 
     @app.route('/api/incidents', methods=['GET', 'POST'])
     def incidents():
-        """Handle incidents"""
+        """Handle incidents list and creation"""
         if request.method == 'GET':
             try:
                 limit  = int(request.args.get('limit', 50))
                 offset = int(request.args.get('offset', 0))
-                # Optional severity filter: ?blast_radius=CRITICAL
                 br_filter = request.args.get('blast_radius', '').strip().upper() or None
-                if br_filter and br_filter not in _VALID_BLAST:
-                    return jsonify({"error": f"Invalid blast_radius filter '{br_filter}'. Use one of: {sorted(_VALID_BLAST)}"}), 400
-
-                raw        = incident_manager.list_incidents(limit, offset, blast_radius_filter=br_filter)
+                
+                raw = incident_manager.list_incidents(limit, offset, blast_radius_filter=br_filter)
                 normalized = [_normalize_incident(inc) for inc in raw]
                 return jsonify({
                     "incidents": normalized,
                     "total":     len(normalized),
                     "limit":     limit,
                     "offset":    offset,
-                    "filter":    {"blast_radius": br_filter} if br_filter else {},
                 })
             except Exception as e:
                 return jsonify({"error": str(e)}), 500
@@ -111,27 +102,26 @@ def register_incident_routes(app, incident_manager):
             except Exception as e:
                 return jsonify({"error": str(e)}), 500
 
-
     @app.route('/api/incidents/<incident_id>')
     def get_incident(incident_id):
-        """
-        Get a single incident by UUID id or trace_id.
-        Returns: { incident, rca?, actions }
-        """
+        """Get a single incident by UUID id or trace_id."""
         try:
             raw = incident_manager.get_incident(incident_id)
             if not raw:
                 return jsonify({"error": "Incident not found"}), 404
 
             inc = _normalize_incident(raw)
-
-            # Extract rca_json → rca (frontend expects it as a sibling key)
+            
+            # Extract rca_json -> rca (frontend expects it as a sibling key)
             rca = inc.pop("rca_json", None)
+            if isinstance(rca, str):
+                try:
+                    rca = json.loads(rca)
+                except Exception:
+                    pass
 
-            # Extract actions → actions (also a sibling key)
+            # Extract actions
             actions = inc.pop("actions", [])
-
-            # Serialize datetime objects inside actions
             clean_actions = []
             for a in (actions or []):
                 ca = dict(a)
@@ -143,12 +133,11 @@ def register_incident_routes(app, incident_manager):
 
             return jsonify({
                 "incident": inc,
-                "rca":      rca,       # None if no RCA yet → frontend shows "RCA not ready"
+                "rca":      rca,
                 "actions":  clean_actions,
             })
         except Exception as e:
             return jsonify({"error": str(e)}), 500
-
 
     @app.route('/api/logs', methods=['GET', 'POST'])
     def logs():

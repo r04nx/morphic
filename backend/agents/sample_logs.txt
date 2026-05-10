@@ -1,0 +1,21 @@
+2024-05-10 10:15:23.456 [ERROR] [payment-service] [trace-id: abc123-def456-ghi789] Payment processing failed: Gateway timeout after 30s
+2024-05-10 10:15:23.457 [WARN] [payment-service] [trace-id: abc123-def456-ghi789] Retrying payment transaction for order ORD-78945
+2024-05-10 10:15:53.123 [ERROR] [payment-service] [trace-id: abc123-def456-ghi789] Second payment attempt failed: Connection refused to payment gateway
+2024-05-10 10:15:53.124 [ERROR] [payment-service] [trace-id: abc123-def456-ghi789] Payment status UNKNOWN for order ORD-78945 - potential duplicate payment risk
+2024-05-10 10:16:01.789 [INFO] [order-service] [trace-id: abc123-def456-ghi789] Order ORD-78945 created successfully
+2024-05-10 10:16:02.001 [ERROR] [order-service] [trace-id: abc123-def456-ghi789] Failed to update payment status: NullPointerException at OrderService.updatePaymentStatus
+2024-05-10 10:16:02.002 [WARN] [order-service] [trace-id: abc123-def456-ghi789] Order ORD-78945 stuck in CREATED state due to payment status update failure
+2024-05-10 10:16:15.345 [ERROR] [inventory-service] [trace-id: xyz789-uvw456-rst123] Race condition detected: Stock count went negative for product SKU-12345
+2024-05-10 10:16:15.346 [ERROR] [inventory-service] [trace-id: xyz789-uvw456-rst123] Current stock: -5 for product SKU-12345 - inventory inconsistency detected
+2024-05-10 10:16:15.347 [WARN] [inventory-service] [trace-id: xyz789-uvw456-rst123] Concurrent stock updates detected for product SKU-12345
+2024-05-10 10:16:30.111 [ERROR] [async-worker] [trace-id: null] Async trace context lost: MDC not propagated to worker thread
+2024-05-10 10:16:30.112 [WARN] [async-worker] [trace-id: null] Processing orphaned task without trace correlation
+2024-05-10 10:16:30.113 [ERROR] [async-worker] [trace-id: null] Failed to process payment notification: Missing trace context for audit logging
+2024-05-10 10:16:45.678 [CRITICAL] [database] [trace-id: pqr456-stu789-vwx012] Partial write detected: Payment record created but transaction log incomplete
+2024-05-10 10:16:45.679 [ERROR] [database] [trace-id: pqr456-stu789-vwx012] Orphaned payment record ID: PAY-98765 with incomplete transaction data
+2024-05-10 10:16:45.680 [WARN] [database] [trace-id: pqr456-stu789-vwx012] Data consistency check failed: Payment record exists without corresponding transaction log
+2024-05-10 10:17:00.234 [ERROR] [api-gateway] [trace-id: mno345-pqr678-stu901] Circuit breaker triggered: Payment service unavailable
+2024-05-10 10:17:00.235 [WARN] [api-gateway] [trace-id: mno345-pqr678-stu901] Fallback response sent: Service temporarily unavailable
+2024-05-10 10:17:15.890 [INFO] [health-check] [trace-id: health-check-001] Payment service health check failed: Connection timeout
+2024-05-10 10:17:15.891 [INFO] [health-check] [trace-id: health-check-001] Order service health check: OK
+2024-05-10 10:17:15.892 [INFO] [health-check] [trace-id: health-check-001] Inventory service health check: OK

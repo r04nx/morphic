@@ -1,6 +1,6 @@
 import { createFileRoute, Link, useRouter } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowLeft, ExternalLink, GitPullRequestArrow, Mail, Loader2 } from "lucide-react";
+import { ArrowLeft, ExternalLink, GitPullRequestArrow, Mail, Loader2, Bot, CheckCircle, XCircle, Clock } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
 import { api } from "@/api/client";
@@ -48,6 +48,13 @@ function IncidentDetailPage() {
     queryKey: ["incident", incidentId],
     queryFn: () => api.getIncident(incidentId),
     refetchInterval: (q) => (q.state.data?.incident.status === "RESOLVED" ? false : 10_000),
+  });
+
+  // Fetch agent runs for this incident
+  const { data: agentRuns, isLoading: isLoadingAgentRuns } = useQuery({
+    queryKey: ["agent-runs", "incident", incidentId],
+    queryFn: () => api.getAgentRunsByIncident(incidentId),
+    refetchInterval: 5_000, // Refresh every 5 seconds for real-time updates
   });
 
   const emailMut = useMutation({
@@ -135,6 +142,7 @@ function IncidentDetailPage() {
           <Tabs defaultValue="rca" className="mt-6">
             <TabsList>
               <TabsTrigger value="rca">RCA</TabsTrigger>
+              <TabsTrigger value="agent">Claude Agent</TabsTrigger>
               <TabsTrigger value="actions">Actions</TabsTrigger>
               <TabsTrigger value="logs">Related Logs</TabsTrigger>
             </TabsList>
@@ -146,6 +154,98 @@ function IncidentDetailPage() {
                 <EmptyState
                   title="RCA not ready yet"
                   description="Morphic is still analyzing this incident. The page will refresh automatically."
+                />
+              )}
+            </TabsContent>
+
+            <TabsContent value="agent" className="mt-4">
+              {isLoadingAgentRuns ? (
+                <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  Loading agent status...
+                </div>
+              ) : agentRuns && agentRuns.length > 0 ? (
+                <div className="space-y-4">
+                  {agentRuns.map((run) => (
+                    <div key={run.id} className="rounded-xl border border-border bg-card p-5">
+                      <div className="flex items-center justify-between mb-3">
+                        <div className="flex items-center gap-2">
+                          <Bot className="h-4 w-4 text-primary" />
+                          <span className="font-medium">Claude Agent Run</span>
+                        </div>
+                        <AgentStatusChip status={run.status} />
+                      </div>
+                      
+                      <div className="grid gap-4 md:grid-cols-2">
+                        <div>
+                          <div className="text-[11px] font-mono uppercase tracking-wider text-muted-foreground">
+                            Triggered
+                          </div>
+                          <div className="mt-1 font-mono text-sm">
+                            {format(new Date(run.triggered_at), "PPpp")}
+                          </div>
+                        </div>
+                        {run.completed_at && (
+                          <div>
+                            <div className="text-[11px] font-mono uppercase tracking-wider text-muted-foreground">
+                              Duration
+                            </div>
+                            <div className="mt-1 font-mono text-sm">
+                              {formatDuration(run.triggered_at, run.completed_at)}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                      
+                      {run.github_pr_url && (
+                        <div className="mt-4">
+                          <div className="text-[11px] font-mono uppercase tracking-wider text-muted-foreground">
+                            Pull Request
+                          </div>
+                          <a
+                            href={run.github_pr_url}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="mt-2 inline-flex items-center gap-2 text-sm text-primary hover:underline"
+                          >
+                            <GitPullRequestArrow className="h-4 w-4" />
+                            View PR on GitHub
+                            <ExternalLink className="h-3 w-3" />
+                          </a>
+                        </div>
+                      )}
+                      
+                      {run.claude_output && (
+                        <div className="mt-4">
+                          <div className="text-[11px] font-mono uppercase tracking-wider text-muted-foreground">
+                            Claude Analysis
+                          </div>
+                          <div className="mt-2 rounded-lg border border-border bg-secondary/20 p-3">
+                            <pre className="whitespace-pre-wrap font-mono text-xs leading-relaxed text-foreground/90">
+                              {run.claude_output.slice(0, 500)}
+                              {run.claude_output.length > 500 && "..."}
+                            </pre>
+                          </div>
+                        </div>
+                      )}
+                      
+                      {run.error_message && (
+                        <div className="mt-4">
+                          <div className="text-[11px] font-mono uppercase tracking-wider text-destructive">
+                            Error
+                          </div>
+                          <div className="mt-1 rounded-lg border border-destructive/30 bg-destructive/5 p-3">
+                            <p className="text-sm text-destructive">{run.error_message}</p>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <EmptyState
+                  title="No agent runs yet"
+                  description="Claude agent has not been triggered for this incident."
                 />
               )}
             </TabsContent>
@@ -366,6 +466,54 @@ function Row({ label, value }: { label: string; value: string }) {
       <span className="text-foreground/90">{value}</span>
     </div>
   );
+}
+
+function AgentStatusChip({ status }: { status: string }) {
+  const getStatusConfig = (status: string) => {
+    switch (status) {
+      case 'QUEUED':
+        return { icon: <Clock className="h-3 w-3" />, color: 'text-muted-foreground', bg: 'bg-secondary/20', label: 'Queued' };
+      case 'RUNNING':
+        return { icon: <Loader2 className="h-3 w-3 animate-spin" />, color: 'text-blue-600', bg: 'bg-blue-50', label: 'Running' };
+      case 'ANALYZING':
+        return { icon: <Bot className="h-3 w-3" />, color: 'text-purple-600', bg: 'bg-purple-50', label: 'Analyzing' };
+      case 'PR_CREATED':
+        return { icon: <CheckCircle className="h-3 w-3" />, color: 'text-green-600', bg: 'bg-green-50', label: 'PR Created' };
+      case 'COMPLETED':
+        return { icon: <CheckCircle className="h-3 w-3" />, color: 'text-green-600', bg: 'bg-green-50', label: 'Completed' };
+      case 'FAILED':
+        return { icon: <XCircle className="h-3 w-3" />, color: 'text-red-600', bg: 'bg-red-50', label: 'Failed' };
+      default:
+        return { icon: <Clock className="h-3 w-3" />, color: 'text-muted-foreground', bg: 'bg-secondary/20', label: status };
+    }
+  };
+
+  const config = getStatusConfig(status);
+  
+  return (
+    <span className={`inline-flex items-center gap-1 rounded-full px-2 py-1 font-mono text-[10px] font-medium ${config.bg} ${config.color}`}>
+      {config.icon}
+      {config.label}
+    </span>
+  );
+}
+
+function formatDuration(started: string, completed: string): string {
+  const start = new Date(started);
+  const end = new Date(completed);
+  const diffMs = end.getTime() - start.getTime();
+  
+  if (diffMs < 1000) {
+    return `${diffMs}ms`;
+  } else if (diffMs < 60000) {
+    return `${Math.round(diffMs / 1000)}s`;
+  } else if (diffMs < 3600000) {
+    return `${Math.round(diffMs / 60000)}m ${Math.round((diffMs % 60000) / 1000)}s`;
+  } else {
+    const hours = Math.floor(diffMs / 3600000);
+    const minutes = Math.round((diffMs % 3600000) / 60000);
+    return `${hours}h ${minutes}m`;
+  }
 }
 
 function ConfirmAction({

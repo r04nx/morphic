@@ -1,8 +1,8 @@
 """Incident model and manager for Morphic backend"""
 import json
 from datetime import datetime
+import uuid
 from psycopg2.extras import RealDictCursor
-
 
 class IncidentManager:
     """Manages incident operations"""
@@ -25,6 +25,25 @@ class IncidentManager:
                 pass
             raise
 
+    def _get_actions(self, incident_id):
+        """Fetch remediation actions for an incident."""
+        try:
+            with self.db.get_cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT id, action_type, status, details, started_at, completed_at, created_at
+                    FROM remediation_actions
+                    WHERE incident_id = %s::uuid
+                    ORDER BY created_at DESC
+                    """,
+                    (str(incident_id),)
+                )
+                rows = cursor.fetchall()
+            return [dict(r) for r in rows]
+        except Exception as e:
+            print(f"Failed to fetch actions (non-fatal): {e}")
+            return []
+
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
@@ -34,8 +53,8 @@ class IncidentManager:
         query = """
         INSERT INTO incidents 
         (trace_id, timestamp, classification, root_cause, blast_radius, 
-         impact, confidence_score, status)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+         impact, confidence_score, status, service, summary)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         RETURNING *
         """
         with self.db.get_cursor() as cursor:
@@ -47,7 +66,9 @@ class IncidentManager:
                 incident_data.get('blast_radius'),
                 incident_data.get('impact'),
                 incident_data.get('confidence_score'),
-                incident_data.get('status', 'active')
+                incident_data.get('status', 'active'),
+                incident_data.get('service'),
+                incident_data.get('summary')
             ))
             incident = dict(cursor.fetchone())
 
@@ -71,13 +92,10 @@ class IncidentManager:
         Fetch a single incident by UUID id OR trace_id.
         Also attaches remediation_actions for the incident.
         """
-        import uuid as _uuid
-
-        # Try Redis cache first (keyed by trace_id — skip for UUID lookups
-        # since the cache key is trace_id, not UUID)
+        # Try Redis cache first (keyed by trace_id)
         is_uuid = False
         try:
-            _uuid.UUID(str(incident_id))
+            uuid.UUID(str(incident_id))
             is_uuid = True
         except ValueError:
             pass
@@ -86,29 +104,18 @@ class IncidentManager:
             try:
                 cached = self.db.redis_client.get(f"incident:{incident_id}")
                 if cached:
-                    import json as _json
-                    return _json.loads(cached)
+                    return json.loads(cached)
             except Exception as e:
                 print(f"Redis cache read failed (non-fatal): {e}")
 
         # Query DB — try by UUID id first, then by trace_id
         if is_uuid:
             sql = """
-                SELECT
-                    i.id, i.trace_id, i.timestamp, i.classification, i.root_cause,
-                    i.blast_radius, i.impact, i.confidence_score, i.status,
-                    i.created_at, i.updated_at, i.service, i.summary, i.rca_json
-                FROM incidents i
-                WHERE i.id = %s::uuid
+                SELECT * FROM incidents WHERE id = %s::uuid
             """
         else:
             sql = """
-                SELECT
-                    i.id, i.trace_id, i.timestamp, i.classification, i.root_cause,
-                    i.blast_radius, i.impact, i.confidence_score, i.status,
-                    i.created_at, i.updated_at, i.service, i.summary, i.rca_json
-                FROM incidents i
-                WHERE i.trace_id = %s
+                SELECT * FROM incidents WHERE trace_id = %s
             """
 
         with self.db.get_cursor() as cursor:
@@ -123,7 +130,7 @@ class IncidentManager:
         # Attach remediation actions
         incident_dict["actions"] = self._get_actions(incident_dict["id"])
 
-        # Cache by trace_id for future lookups
+        # Cache by trace_id
         if self.db.redis_client:
             try:
                 self.db.redis_client.setex(
@@ -136,37 +143,9 @@ class IncidentManager:
 
         return incident_dict
 
-    def _get_actions(self, incident_id):
-        """Fetch remediation actions for an incident."""
-        try:
-            with self.db.get_cursor() as cursor:
-                cursor.execute(
-                    """
-                    SELECT id, action_type, status, details, started_at, completed_at, created_at
-                    FROM remediation_actions
-                    WHERE incident_id = %s::uuid
-                    ORDER BY created_at DESC
-                    """,
-                    (str(incident_id),)
-                )
-                rows = cursor.fetchall()
-            return [dict(r) for r in rows]
-        except Exception as e:
-            print(f"Failed to fetch actions (non-fatal): {e}")
-            return []
-
     def list_incidents(self, limit=50, offset=0, blast_radius_filter=None):
-        """
-        List triaged incidents ordered by severity (CRITICAL first) then recency.
-
-        Args:
-            limit: max rows
-            offset: pagination offset
-            blast_radius_filter: optional str e.g. "HIGH" — return only that severity
-        """
+        """List incidents with optional pagination and filtering"""
         params = []
-
-        # Only rows that have been triaged (blast_radius set)
         where = "WHERE blast_radius IS NOT NULL"
 
         if blast_radius_filter:
@@ -174,11 +153,7 @@ class IncidentManager:
             params.append(blast_radius_filter.upper().strip())
 
         query = f"""
-        SELECT
-            id, trace_id, timestamp, classification, root_cause,
-            blast_radius, impact, confidence_score, status,
-            created_at, updated_at, service, summary, rca_json
-        FROM incidents
+        SELECT * FROM incidents
         {where}
         ORDER BY
             CASE UPPER(blast_radius)
@@ -197,7 +172,6 @@ class IncidentManager:
             cursor.execute(query, params)
             rows = cursor.fetchall()
         return [dict(row) for row in rows]
-
 
     def add_incident_log(self, incident_id, log_data):
         """Add log entry to incident timeline"""
