@@ -1,1 +1,1 @@
-"""Utility functions for Morphic backend"""
+"""utils package"""

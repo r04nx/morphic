@@ -1,69 +1,46 @@
-"""Actions routes for Morphic backend"""
+"""
+/api/actions  — remediation action history
+"""
 
-import json
+import logging
 from datetime import datetime
 
-from flask import jsonify, request
-from psycopg2.extras import RealDictCursor
+from flask import Blueprint, jsonify, request
+
+from db import postgres
+
+logger = logging.getLogger(__name__)
+bp = Blueprint("actions", __name__, url_prefix="/api/actions")
 
 
-def _serialize_action(row: dict) -> dict:
-    res = dict(row)
-    for k in ("started_at", "completed_at", "created_at"):
-        if isinstance(res.get(k), datetime):
-            res[k] = res[k].isoformat()
-    if isinstance(res.get("details"), str):
-        try:
-            res["details"] = json.loads(res["details"])
-        except Exception:
-            pass
-    return res
+def _serialize(row: dict) -> dict:
+    out = {}
+    for k, v in row.items():
+        if isinstance(v, datetime):
+            out[k] = v.isoformat()
+        else:
+            out[k] = v
+    return out
 
 
-def register_action_routes(app, db_manager):
-    """Register /api/actions routes"""
+@bp.get("")
+def list_actions():
+    """GET /api/actions?limit=200"""
+    limit = min(int(request.args.get("limit", 200)), 500)
+    try:
+        rows = postgres.list_actions(limit=limit)
+        return jsonify([_serialize(r) for r in rows])
+    except Exception as exc:
+        logger.error("list_actions error: %s", exc)
+        return jsonify({"error": str(exc)}), 500
 
-    @app.route('/api/actions', methods=['GET'])
-    def list_actions():
-        try:
-            limit = request.args.get('limit', 200, type=int)
-            limit = min(max(limit, 1), 500)
 
-            with db_manager.postgres_conn.cursor(cursor_factory=RealDictCursor) as cursor:
-                cursor.execute(
-                    """
-                    SELECT ra.id, ra.incident_id, ra.action_type, ra.status,
-                           ra.details, ra.started_at, ra.completed_at, ra.created_at,
-                           i.trace_id
-                    FROM remediation_actions ra
-                    JOIN incidents i ON i.id = ra.incident_id
-                    ORDER BY ra.created_at DESC
-                    LIMIT %s
-                    """,
-                    (limit,),
-                )
-                rows = cursor.fetchall()
-
-            return jsonify([_serialize_action(r) for r in rows])
-        except Exception as e:
-            return jsonify({"error": str(e)}), 500
-
-    @app.route('/api/actions/incident/<incident_id>', methods=['GET'])
-    def list_actions_for_incident(incident_id):
-        try:
-            with db_manager.postgres_conn.cursor(cursor_factory=RealDictCursor) as cursor:
-                cursor.execute(
-                    """
-                    SELECT id, incident_id, action_type, status, details,
-                           started_at, completed_at, created_at
-                    FROM remediation_actions
-                    WHERE incident_id = %s
-                    ORDER BY created_at DESC
-                    """,
-                    (incident_id,),
-                )
-                rows = cursor.fetchall()
-
-            return jsonify([_serialize_action(r) for r in rows])
-        except Exception as e:
-            return jsonify({"error": str(e)}), 500
+@bp.get("/incident/<incident_id>")
+def get_actions_for_incident(incident_id: str):
+    """GET /api/actions/incident/<incident_id>"""
+    try:
+        rows = postgres.get_actions_for_incident(incident_id)
+        return jsonify([_serialize(r) for r in rows])
+    except Exception as exc:
+        logger.error("get_actions_for_incident error: %s", exc)
+        return jsonify({"error": str(exc)}), 500

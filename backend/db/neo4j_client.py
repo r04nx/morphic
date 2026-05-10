@@ -1,0 +1,194 @@
+"""
+Neo4j client — manages the driver singleton and provides graph helpers.
+
+Node labels:  Incident, Service, Order, User
+Relationships: ORIGINATED_IN, AFFECTED, TRIGGERED, CORRELATES_WITH
+"""
+
+import logging
+from typing import Any
+
+from neo4j import GraphDatabase, Driver
+from neo4j.exceptions import ServiceUnavailable
+
+from config import Config
+
+logger = logging.getLogger(__name__)
+
+_driver: Driver | None = None
+
+
+def get_driver() -> Driver:
+    global _driver
+    if _driver is None:
+        _driver = GraphDatabase.driver(
+            Config.NEO4J_URI,
+            auth=(Config.NEO4J_USER, Config.NEO4J_PASSWORD),
+        )
+        logger.info("Neo4j driver initialised at %s", Config.NEO4J_URI)
+    return _driver
+
+
+def close_driver() -> None:
+    global _driver
+    if _driver:
+        _driver.close()
+        _driver = None
+        logger.info("Neo4j driver closed")
+
+
+def ping() -> bool:
+    try:
+        get_driver().verify_connectivity()
+        return True
+    except ServiceUnavailable:
+        return False
+
+
+# ---------------------------------------------------------------------------
+# Graph write helpers
+# ---------------------------------------------------------------------------
+
+def upsert_incident_graph(incident: dict[str, Any]) -> None:
+    """
+    Create/update an Incident node and link it to its Service node.
+    Relationships:
+        (Incident)-[:ORIGINATED_IN]->(Service)
+    """
+    cypher = """
+        MERGE (i:Incident {trace_id: $trace_id})
+        SET i.timestamp       = $timestamp,
+            i.classification  = $classification,
+            i.blast_radius    = $blast_radius,
+            i.root_cause      = $root_cause,
+            i.status          = $status,
+            i.confidence_score = $confidence_score,
+            i.summary         = $summary
+
+        MERGE (s:Service {name: $service})
+
+        MERGE (i)-[:ORIGINATED_IN]->(s)
+    """
+    params = {
+        "trace_id":        incident.get("trace_id", ""),
+        "timestamp":       str(incident.get("timestamp", "")),
+        "classification":  incident.get("classification", ""),
+        "blast_radius":    incident.get("blast_radius", "LOW"),
+        "root_cause":      incident.get("root_cause", ""),
+        "status":          incident.get("status", "active"),
+        "confidence_score": float(incident.get("confidence_score", 0.0)),
+        "summary":         incident.get("summary", ""),
+        "service":         incident.get("service", "unknown"),
+    }
+    try:
+        with get_driver().session(database=Config.NEO4J_DATABASE) as session:
+            session.run(cypher, params)
+    except Exception as exc:
+        logger.warning("Neo4j upsert_incident_graph failed: %s", exc)
+
+
+def link_order_to_incident(trace_id: str, order_id: str) -> None:
+    """(Incident)-[:AFFECTED]->(Order)"""
+    cypher = """
+        MERGE (i:Incident {trace_id: $trace_id})
+        MERGE (o:Order {order_id: $order_id})
+        MERGE (i)-[:AFFECTED]->(o)
+    """
+    try:
+        with get_driver().session(database=Config.NEO4J_DATABASE) as session:
+            session.run(cypher, {"trace_id": trace_id, "order_id": order_id})
+    except Exception as exc:
+        logger.warning("Neo4j link_order_to_incident failed: %s", exc)
+
+
+def link_user_to_incident(trace_id: str, user_id: str) -> None:
+    """(Incident)-[:AFFECTED]->(User)"""
+    cypher = """
+        MERGE (i:Incident {trace_id: $trace_id})
+        MERGE (u:User {user_id: $user_id})
+        MERGE (i)-[:AFFECTED]->(u)
+    """
+    try:
+        with get_driver().session(database=Config.NEO4J_DATABASE) as session:
+            session.run(cypher, {"trace_id": trace_id, "user_id": user_id})
+    except Exception as exc:
+        logger.warning("Neo4j link_user_to_incident failed: %s", exc)
+
+
+def link_rca_to_incident(trace_id: str, rca: dict[str, Any]) -> None:
+    """Attach RCA metadata properties to the Incident node and create a
+    TRIGGERED relationship to the target Java class node."""
+    cypher = """
+        MERGE (i:Incident {trace_id: $trace_id})
+        SET i.rca_classification = $classification,
+            i.rca_blast_radius   = $blast_radius,
+            i.rca_confidence     = $confidence_score,
+            i.rca_root_cause     = $root_cause
+
+        MERGE (c:JavaClass {name: $target_class})
+        MERGE (i)-[:TRIGGERED]->(c)
+    """
+    params = {
+        "trace_id":        trace_id,
+        "classification":  rca.get("classification", ""),
+        "blast_radius":    rca.get("blast_radius", "LOW"),
+        "confidence_score": float(rca.get("confidence_score", 0.0)),
+        "root_cause":      rca.get("root_cause", ""),
+        "target_class":    rca.get("suggested_fix", {}).get("target_class", "Unknown"),
+    }
+    try:
+        with get_driver().session(database=Config.NEO4J_DATABASE) as session:
+            session.run(cypher, params)
+    except Exception as exc:
+        logger.warning("Neo4j link_rca_to_incident failed: %s", exc)
+
+
+def correlate_incidents(trace_id_a: str, trace_id_b: str) -> None:
+    """(Incident A)-[:CORRELATES_WITH]->(Incident B)"""
+    cypher = """
+        MATCH (a:Incident {trace_id: $a})
+        MATCH (b:Incident {trace_id: $b})
+        MERGE (a)-[:CORRELATES_WITH]->(b)
+    """
+    try:
+        with get_driver().session(database=Config.NEO4J_DATABASE) as session:
+            session.run(cypher, {"a": trace_id_a, "b": trace_id_b})
+    except Exception as exc:
+        logger.warning("Neo4j correlate_incidents failed: %s", exc)
+
+
+def update_incident_status_graph(trace_id: str, status: str) -> None:
+    cypher = """
+        MATCH (i:Incident {trace_id: $trace_id})
+        SET i.status = $status
+    """
+    try:
+        with get_driver().session(database=Config.NEO4J_DATABASE) as session:
+            session.run(cypher, {"trace_id": trace_id, "status": status})
+    except Exception as exc:
+        logger.warning("Neo4j update_incident_status_graph failed: %s", exc)
+
+
+def get_incident_graph(trace_id: str) -> dict[str, Any]:
+    """Return the incident node and its first-degree neighbours."""
+    cypher = """
+        MATCH (i:Incident {trace_id: $trace_id})
+        OPTIONAL MATCH (i)-[r]->(n)
+        RETURN i, collect({rel: type(r), node: n}) AS neighbours
+    """
+    try:
+        with get_driver().session(database=Config.NEO4J_DATABASE) as session:
+            result = session.run(cypher, {"trace_id": trace_id})
+            record = result.single()
+            if not record:
+                return {}
+            node = dict(record["i"])
+            neighbours = [
+                {"relationship": nb["rel"], "node": dict(nb["node"])}
+                for nb in record["neighbours"]
+                if nb["node"] is not None
+            ]
+            return {"incident": node, "neighbours": neighbours}
+    except Exception as exc:
+        logger.warning("Neo4j get_incident_graph failed: %s", exc)
+        return {}
