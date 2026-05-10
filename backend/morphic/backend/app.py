@@ -42,13 +42,14 @@ def create_app() -> Flask:
     # Register blueprints
     # -----------------------------------------------------------------------
     from routes.incidents import bp as incidents_bp
-    from routes.traces    import bp as traces_bp
+    from routes.traces    import bp as traces_bp, graph_bp
     from routes.actions   import bp as actions_bp
     from routes.health    import bp as health_bp
     from routes.settings  import bp as settings_bp
 
     app.register_blueprint(incidents_bp)
     app.register_blueprint(traces_bp)
+    app.register_blueprint(graph_bp)
     app.register_blueprint(actions_bp)
     app.register_blueprint(health_bp)
     app.register_blueprint(settings_bp)

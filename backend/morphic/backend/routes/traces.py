@@ -11,6 +11,7 @@ from db import postgres, neo4j_client
 
 logger = logging.getLogger(__name__)
 bp = Blueprint("traces", __name__, url_prefix="/api/traces")
+graph_bp = Blueprint("graph", __name__, url_prefix="/api/graph")
 
 
 def _serialize_row(row: dict) -> dict:
@@ -43,4 +44,15 @@ def get_trace_graph(trace_id: str):
         return jsonify(graph)
     except Exception as exc:
         logger.error("get_trace_graph error: %s", exc)
+        return jsonify({"error": str(exc)}), 500
+
+
+@graph_bp.get("/incidents")
+def get_graph_incidents():
+    """GET /api/graph/incidents"""
+    try:
+        graph = neo4j_client.get_all_incidents_cytoscape()
+        return jsonify(graph)
+    except Exception as exc:
+        logger.error("get_graph_incidents error: %s", exc)
         return jsonify({"error": str(exc)}), 500

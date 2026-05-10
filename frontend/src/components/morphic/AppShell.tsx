@@ -1,5 +1,5 @@
 import { Link, useRouterState } from "@tanstack/react-router";
-import { Activity, LineChart, Search, Settings, Workflow } from "lucide-react";
+import { Activity, LineChart, Search, Settings, Workflow, Network } from "lucide-react";
 import { useEffect, useState, type ReactNode } from "react";
 import { useNavigate } from "@tanstack/react-router";
 import { isMockMode } from "@/api/client";
@@ -10,6 +10,7 @@ import { useTheme } from "./theme";
 const NAV = [
   { to: "/incidents", label: "Incidents", icon: Activity },
   { to: "/monitors", label: "Monitors", icon: LineChart },
+  { to: "/graph", label: "Knowledge Graph", icon: Network },
   { to: "/actions", label: "Actions", icon: Workflow },
   { to: "/settings", label: "Settings", icon: Settings },
 ] as const;

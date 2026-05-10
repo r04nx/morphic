@@ -10,6 +10,7 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as SettingsRouteImport } from './routes/settings'
+import { Route as GraphRouteImport } from './routes/graph'
 import { Route as ActionsRouteImport } from './routes/actions'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as MonitorsIndexRouteImport } from './routes/monitors.index'
@@ -21,6 +22,11 @@ import { Route as IncidentsIncidentIdRouteImport } from './routes/incidents.$inc
 const SettingsRoute = SettingsRouteImport.update({
   id: '/settings',
   path: '/settings',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const GraphRoute = GraphRouteImport.update({
+  id: '/graph',
+  path: '/graph',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ActionsRoute = ActionsRouteImport.update({
@@ -62,6 +68,7 @@ const IncidentsIncidentIdRoute = IncidentsIncidentIdRouteImport.update({
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/actions': typeof ActionsRoute
+  '/graph': typeof GraphRoute
   '/settings': typeof SettingsRoute
   '/incidents/$incidentId': typeof IncidentsIncidentIdRoute
   '/monitors/$monitorId': typeof MonitorsMonitorIdRoute
@@ -72,6 +79,7 @@ export interface FileRoutesByFullPath {
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/actions': typeof ActionsRoute
+  '/graph': typeof GraphRoute
   '/settings': typeof SettingsRoute
   '/incidents/$incidentId': typeof IncidentsIncidentIdRoute
   '/monitors/$monitorId': typeof MonitorsMonitorIdRoute
@@ -83,6 +91,7 @@ export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/actions': typeof ActionsRoute
+  '/graph': typeof GraphRoute
   '/settings': typeof SettingsRoute
   '/incidents/$incidentId': typeof IncidentsIncidentIdRoute
   '/monitors/$monitorId': typeof MonitorsMonitorIdRoute
@@ -95,6 +104,7 @@ export interface FileRouteTypes {
   fullPaths:
     | '/'
     | '/actions'
+    | '/graph'
     | '/settings'
     | '/incidents/$incidentId'
     | '/monitors/$monitorId'
@@ -105,6 +115,7 @@ export interface FileRouteTypes {
   to:
     | '/'
     | '/actions'
+    | '/graph'
     | '/settings'
     | '/incidents/$incidentId'
     | '/monitors/$monitorId'
@@ -115,6 +126,7 @@ export interface FileRouteTypes {
     | '__root__'
     | '/'
     | '/actions'
+    | '/graph'
     | '/settings'
     | '/incidents/$incidentId'
     | '/monitors/$monitorId'
@@ -126,6 +138,7 @@ export interface FileRouteTypes {
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   ActionsRoute: typeof ActionsRoute
+  GraphRoute: typeof GraphRoute
   SettingsRoute: typeof SettingsRoute
   IncidentsIncidentIdRoute: typeof IncidentsIncidentIdRoute
   MonitorsMonitorIdRoute: typeof MonitorsMonitorIdRoute
@@ -141,6 +154,13 @@ declare module '@tanstack/react-router' {
       path: '/settings'
       fullPath: '/settings'
       preLoaderRoute: typeof SettingsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/graph': {
+      id: '/graph'
+      path: '/graph'
+      fullPath: '/graph'
+      preLoaderRoute: typeof GraphRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/actions': {
@@ -198,6 +218,7 @@ declare module '@tanstack/react-router' {
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   ActionsRoute: ActionsRoute,
+  GraphRoute: GraphRoute,
   SettingsRoute: SettingsRoute,
   IncidentsIncidentIdRoute: IncidentsIncidentIdRoute,
   MonitorsMonitorIdRoute: MonitorsMonitorIdRoute,
@@ -208,13 +229,3 @@ const rootRouteChildren: RootRouteChildren = {
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)
   ._addFileTypes<FileRouteTypes>()
-
-import type { getRouter } from './router.tsx'
-import type { startInstance } from './start.ts'
-declare module '@tanstack/react-start' {
-  interface Register {
-    ssr: true
-    router: Awaited<ReturnType<typeof getRouter>>
-    config: Awaited<ReturnType<typeof startInstance.getOptions>>
-  }
-}

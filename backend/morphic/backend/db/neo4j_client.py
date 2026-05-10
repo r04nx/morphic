@@ -192,3 +192,110 @@ def get_incident_graph(trace_id: str) -> dict[str, Any]:
     except Exception as exc:
         logger.warning("Neo4j get_incident_graph failed: %s", exc)
         return {}
+
+
+def get_all_incidents_cytoscape() -> dict[str, Any]:
+    """Return all incidents (with blast_radius) and related nodes/edges in Cytoscape format."""
+    cypher = """
+        MATCH (i:Incident)
+        WHERE i.blast_radius IS NOT NULL
+        
+        OPTIONAL MATCH (i)-[r]->(m)
+        WHERE type(r) IN ['ORIGINATED_IN', 'AFFECTED', 'TRIGGERED', 'CORRELATES_WITH', 'HEALED']
+        
+        RETURN i, r, m
+    """
+    try:
+        with get_driver().session(database=Config.NEO4J_DATABASE) as session:
+            result = session.run(cypher)
+            
+            nodes = {}
+            edges = []
+            
+            for record in result:
+                i = record["i"]
+                r = record["r"]
+                m = record["m"]
+                
+                if not i:
+                    continue
+
+                i_id = f"incident-{i.get('trace_id', getattr(i, 'element_id', 'unknown'))}"
+                if i_id not in nodes:
+                    nodes[i_id] = {
+                        "data": {
+                            "id": i_id,
+                            "label": i.get("classification") or i.get("summary", "Unknown Incident")[:30],
+                            "type": "incident",
+                            "severity": i.get("blast_radius", "LOW"),
+                            "confidence": i.get("confidence_score", 0.0),
+                            "status": i.get("status", "unknown"),
+                            "trace_id": i.get("trace_id", ""),
+                            "root_cause": i.get("root_cause", ""),
+                            "classification": i.get("classification", "")
+                        }
+                    }
+                
+                if m is not None and r is not None:
+                    labels = list(m.labels)
+                    m_type = labels[0].lower() if labels else "unknown"
+                    
+                    if "Service" in labels:
+                        m_id = f"service-{m.get('name', getattr(m, 'element_id', 'unknown'))}"
+                        label = m.get("name", "Unknown Service")
+                    elif "Order" in labels:
+                        m_id = f"order-{m.get('order_id', getattr(m, 'element_id', 'unknown'))}"
+                        label = m.get("order_id", "Unknown Order")
+                    elif "User" in labels:
+                        m_id = f"user-{m.get('user_id', getattr(m, 'element_id', 'unknown'))}"
+                        label = m.get("user_id", "Unknown User")
+                    elif "Incident" in labels:
+                        m_id = f"incident-{m.get('trace_id', getattr(m, 'element_id', 'unknown'))}"
+                        label = m.get("classification") or m.get("summary", "Unknown Incident")[:30]
+                        if m_id not in nodes:
+                            nodes[m_id] = {
+                                "data": {
+                                    "id": m_id,
+                                    "label": label,
+                                    "type": "incident",
+                                    "severity": m.get("blast_radius", "LOW"),
+                                    "confidence": m.get("confidence_score", 0.0),
+                                    "status": m.get("status", "unknown"),
+                                    "trace_id": m.get("trace_id", ""),
+                                    "root_cause": m.get("root_cause", ""),
+                                    "classification": m.get("classification", "")
+                                }
+                            }
+                    elif "JavaClass" in labels:
+                        m_id = f"javaclass-{m.get('name', getattr(m, 'element_id', 'unknown'))}"
+                        label = m.get("name", "Unknown Class")
+                    else:
+                        m_id = f"node-{getattr(m, 'element_id', 'unknown')}"
+                        label = "Unknown"
+
+                    if m_id not in nodes:
+                        nodes[m_id] = {
+                            "data": {
+                                "id": m_id,
+                                "label": label,
+                                "type": m_type
+                            }
+                        }
+                        
+                    edge_id = f"edge-{getattr(r, 'element_id', hash(r))}"
+                    edges.append({
+                        "data": {
+                            "id": edge_id,
+                            "source": i_id,
+                            "target": m_id,
+                            "label": r.type
+                        }
+                    })
+                    
+            return {
+                "nodes": list(nodes.values()),
+                "edges": edges
+            }
+    except Exception as exc:
+        logger.warning("Neo4j get_all_incidents_cytoscape failed: %s", exc)
+        return {"nodes": [], "edges": []}
