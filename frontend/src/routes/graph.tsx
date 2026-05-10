@@ -19,6 +19,7 @@ function GraphRoute() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [selectedIncident, setSelectedIncident] = useState<any | null>(null);
+  const [mounted, setMounted] = useState(false);
 
   const fetchData = async () => {
     try {
@@ -35,6 +36,7 @@ function GraphRoute() {
   };
 
   useEffect(() => {
+    setMounted(true);
     fetchData();
     const interval = setInterval(fetchData, 30000);
     return () => clearInterval(interval);
@@ -203,7 +205,8 @@ function GraphRoute() {
       </div>
       
       <div className="flex-1 relative">
-        <CytoscapeComponent
+        {mounted ? (
+          <CytoscapeComponent
           elements={elements}
           style={{ width: '100%', height: '100%', background: '#0D1117' }}
           stylesheet={style as any}
@@ -224,6 +227,7 @@ function GraphRoute() {
             });
           }}
         />
+        ) : null}
         
         {selectedIncident && (
           <div className="absolute right-4 top-4 w-80 rounded-md border border-border/50 bg-[#161B22]/95 p-4 shadow-xl backdrop-blur-sm">

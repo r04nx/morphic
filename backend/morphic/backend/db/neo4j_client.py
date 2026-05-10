@@ -220,19 +220,20 @@ def get_all_incidents_cytoscape() -> dict[str, Any]:
                 if not i:
                     continue
 
-                i_id = f"incident-{i.get('trace_id', getattr(i, 'element_id', 'unknown'))}"
+                i_id = f"incident-{i.get('trace_id') or getattr(i, 'element_id', 'unknown')}"
                 if i_id not in nodes:
+                    i_label = i.get("classification") or i.get("summary") or "Unknown Incident"
                     nodes[i_id] = {
                         "data": {
-                            "id": i_id,
-                            "label": i.get("classification") or i.get("summary", "Unknown Incident")[:30],
+                            "id": str(i_id),
+                            "label": str(i_label)[:30],
                             "type": "incident",
-                            "severity": i.get("blast_radius", "LOW"),
-                            "confidence": i.get("confidence_score", 0.0),
-                            "status": i.get("status", "unknown"),
-                            "trace_id": i.get("trace_id", ""),
-                            "root_cause": i.get("root_cause", ""),
-                            "classification": i.get("classification", "")
+                            "severity": str(i.get("blast_radius", "LOW")),
+                            "confidence": float(i.get("confidence_score") or 0.0),
+                            "status": str(i.get("status", "unknown")),
+                            "trace_id": str(i.get("trace_id", "")),
+                            "root_cause": str(i.get("root_cause", "")),
+                            "classification": str(i.get("classification", ""))
                         }
                     }
                 
@@ -241,34 +242,35 @@ def get_all_incidents_cytoscape() -> dict[str, Any]:
                     m_type = labels[0].lower() if labels else "unknown"
                     
                     if "Service" in labels:
-                        m_id = f"service-{m.get('name', getattr(m, 'element_id', 'unknown'))}"
-                        label = m.get("name", "Unknown Service")
+                        m_id = f"service-{m.get('name') or getattr(m, 'element_id', 'unknown')}"
+                        label = str(m.get("name") or "Unknown Service")
                     elif "Order" in labels:
-                        m_id = f"order-{m.get('order_id', getattr(m, 'element_id', 'unknown'))}"
-                        label = m.get("order_id", "Unknown Order")
+                        m_id = f"order-{m.get('order_id') or getattr(m, 'element_id', 'unknown')}"
+                        label = str(m.get("order_id") or "Unknown Order")
                     elif "User" in labels:
-                        m_id = f"user-{m.get('user_id', getattr(m, 'element_id', 'unknown'))}"
-                        label = m.get("user_id", "Unknown User")
+                        m_id = f"user-{m.get('user_id') or getattr(m, 'element_id', 'unknown')}"
+                        label = str(m.get("user_id") or "Unknown User")
                     elif "Incident" in labels:
-                        m_id = f"incident-{m.get('trace_id', getattr(m, 'element_id', 'unknown'))}"
-                        label = m.get("classification") or m.get("summary", "Unknown Incident")[:30]
+                        m_id = f"incident-{m.get('trace_id') or getattr(m, 'element_id', 'unknown')}"
+                        m_label = m.get("classification") or m.get("summary") or "Unknown Incident"
+                        label = str(m_label)[:30]
                         if m_id not in nodes:
                             nodes[m_id] = {
                                 "data": {
-                                    "id": m_id,
+                                    "id": str(m_id),
                                     "label": label,
                                     "type": "incident",
-                                    "severity": m.get("blast_radius", "LOW"),
-                                    "confidence": m.get("confidence_score", 0.0),
-                                    "status": m.get("status", "unknown"),
-                                    "trace_id": m.get("trace_id", ""),
-                                    "root_cause": m.get("root_cause", ""),
-                                    "classification": m.get("classification", "")
+                                    "severity": str(m.get("blast_radius", "LOW")),
+                                    "confidence": float(m.get("confidence_score") or 0.0),
+                                    "status": str(m.get("status", "unknown")),
+                                    "trace_id": str(m.get("trace_id", "")),
+                                    "root_cause": str(m.get("root_cause", "")),
+                                    "classification": str(m.get("classification", ""))
                                 }
                             }
                     elif "JavaClass" in labels:
-                        m_id = f"javaclass-{m.get('name', getattr(m, 'element_id', 'unknown'))}"
-                        label = m.get("name", "Unknown Class")
+                        m_id = f"javaclass-{m.get('name') or getattr(m, 'element_id', 'unknown')}"
+                        label = str(m.get("name") or "Unknown Class")
                     else:
                         m_id = f"node-{getattr(m, 'element_id', 'unknown')}"
                         label = "Unknown"
@@ -276,19 +278,19 @@ def get_all_incidents_cytoscape() -> dict[str, Any]:
                     if m_id not in nodes:
                         nodes[m_id] = {
                             "data": {
-                                "id": m_id,
+                                "id": str(m_id),
                                 "label": label,
-                                "type": m_type
+                                "type": str(m_type)
                             }
                         }
                         
                     edge_id = f"edge-{getattr(r, 'element_id', hash(r))}"
                     edges.append({
                         "data": {
-                            "id": edge_id,
-                            "source": i_id,
-                            "target": m_id,
-                            "label": r.type
+                            "id": str(edge_id),
+                            "source": str(i_id),
+                            "target": str(m_id),
+                            "label": str(r.type)
                         }
                     })
                     
@@ -297,5 +299,6 @@ def get_all_incidents_cytoscape() -> dict[str, Any]:
                 "edges": edges
             }
     except Exception as exc:
+        import traceback
         logger.warning("Neo4j get_all_incidents_cytoscape failed: %s", exc)
-        return {"nodes": [], "edges": []}
+        return {"nodes": [], "edges": [], "error": str(exc), "traceback": traceback.format_exc()}
