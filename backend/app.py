@@ -33,6 +33,7 @@ from routes.monitors import register_monitor_routes
 from routes.analyze import register_analyze_routes
 from routes.agent import register_agent_routes
 from routes.notifications import register_notification_routes
+from routes.auth import register_auth_routes
 
 # Graph + Actions blueprints live in morphic/backend/routes/.
 # We load them by absolute file path to avoid shadowing the outer `routes/` package.
@@ -65,7 +66,14 @@ except Exception as _graph_import_err:
 # Initialize Flask app
 app = Flask(__name__)
 app.config['SECRET_KEY'] = Config.SECRET_KEY
-CORS(app)
+CORS(app, resources={
+    r"/api/*": {
+        "origins": ["http://localhost:3001"],
+        "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+        "allow_headers": ["Content-Type", "Authorization"],
+        "supports_credentials": True
+    }
+})
 
 # Initialize database manager
 db_manager = DatabaseManager()
@@ -114,6 +122,7 @@ except Exception as _tailer_init_err:
 
 # Register routes
 register_health_routes(app, db_manager)
+register_auth_routes(app, db_manager)
 register_incident_routes(app, incident_manager)
 register_monitor_routes(app, monitor_manager, tailer_registry, TAILER_ENABLED)
 register_analyze_routes(app, log_analyzer)
@@ -125,6 +134,7 @@ if _graph_bp_available:
     app.register_blueprint(actions_bp)
     print("✅ Graph blueprint registered (/api/graph/incidents)")
     print("✅ Actions blueprint registered (/api/actions)")
+print("✅ Auth routes registered (/api/auth)")
 
 @app.route('/')
 def index():
